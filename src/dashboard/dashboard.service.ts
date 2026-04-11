@@ -128,47 +128,63 @@ export class DashboardService {
    * 트렌드 데이터 (차트용)
    * 일별/주별/월별 그룹핑
    */
-  async getTrends(from: string, to: string, groupBy: 'day' | 'week' | 'month' = 'day') {
-    const fromDate = new Date(from);
-    const toDate = new Date(to);
-    toDate.setHours(23, 59, 59, 999);
+  async getTrends(from: string, to: string, groupBy: 'hour' | 'day' | 'week' | 'month' = 'day', siteId?: string) {
+    const { fromDate, toDate } = kstDateRange(from, to);
 
-    // SQLite strftime 포맷 for date truncation
-    let strftimeFmt: string;
+    // PostgreSQL date_trunc / to_char — KST 타임존 기준
+    let dateExpr: string;
     switch (groupBy) {
+      case 'hour':
+        dateExpr = `to_char(started_at AT TIME ZONE 'Asia/Seoul', 'HH24')`;
+        break;
       case 'week':
-        // SQLite: truncate to start of ISO week (Monday)
-        strftimeFmt = '%Y-W%W';
+        dateExpr = `to_char(date_trunc('week', started_at AT TIME ZONE 'Asia/Seoul'), 'YYYY-"W"IW')`;
         break;
       case 'month':
-        strftimeFmt = '%Y-%m-01';
+        dateExpr = `to_char(date_trunc('month', started_at AT TIME ZONE 'Asia/Seoul'), 'YYYY-MM-DD')`;
         break;
       default:
-        strftimeFmt = '%Y-%m-%d';
+        dateExpr = `to_char(started_at AT TIME ZONE 'Asia/Seoul', 'YYYY-MM-DD')`;
     }
 
-    const trends = await this.prisma.$queryRaw<
-      { period: string; count: bigint; total_volume: number; total_quantity: bigint }[]
-    >`
-      SELECT
-        strftime(${strftimeFmt}, started_at) as period,
-        COUNT(*) as count,
-        COALESCE(SUM(volume), 0) as total_volume,
-        COALESCE(SUM(quantity), 0) as total_quantity
-      FROM work_items
-      WHERE started_at >= ${fromDate.toISOString()}
-        AND started_at <= ${toDate.toISOString()}
-        AND status != 'VOID'
-      GROUP BY strftime(${strftimeFmt}, started_at)
-      ORDER BY period ASC
-    `;
+    const siteFilter = siteId
+      ? `AND started_by_worker_id IN (SELECT id FROM workers WHERE site_id = $3)`
+      : '';
+    const queryParams: any[] = [fromDate.toISOString(), toDate.toISOString()];
+    if (siteId) queryParams.push(siteId);
 
-    return trends.map((t) => ({
-      period: t.period,
-      count: Number(t.count),
-      totalVolume: Number(t.total_volume),
-      totalQuantity: Number(t.total_quantity),
-    }));
+    try {
+      const trends = await this.prisma.$queryRawUnsafe<
+        { period: string; count: bigint; total_volume: number; total_quantity: bigint }[]
+      >(
+        `SELECT
+          ${dateExpr} as period,
+          COUNT(*) as count,
+          COALESCE(SUM(volume), 0) as total_volume,
+          COALESCE(SUM(quantity), 0) as total_quantity
+        FROM work_items
+        WHERE started_at >= $1::timestamp
+          AND started_at <= $2::timestamp
+          AND status != 'VOID'
+          ${siteFilter}
+        GROUP BY ${dateExpr}
+        ORDER BY period ASC`,
+        ...queryParams,
+      );
+
+      return trends.map((t) => ({
+        date: t.period,
+        period: t.period,
+        count: Number(t.count),
+        volume: Number(t.total_volume),
+        quantity: Number(t.total_quantity),
+        totalVolume: Number(t.total_volume),
+        totalQuantity: Number(t.total_quantity),
+      }));
+    } catch (err) {
+      this.logger.warn('getTrends failed', err);
+      return [];
+    }
   }
 
   /**

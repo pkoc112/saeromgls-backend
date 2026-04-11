@@ -11,6 +11,7 @@ import { DashboardService } from './dashboard.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
+import { CurrentUser, JwtPayload } from '../common/decorators/current-user.decorator';
 
 @Controller('admin/dashboard')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -21,88 +22,60 @@ export class DashboardController {
   constructor(private readonly dashboardService: DashboardService) {}
 
   @Get('stats')
-  @ApiOperation({
-    summary: 'KPI 통계 조회',
-    description: '기간별 작업 건수, 물량, 평균 작업 시간, 분류별/작업자별 통계.',
-  })
-  @ApiQuery({ name: 'from', required: true, type: String, description: '시작 날짜 (YYYY-MM-DD)' })
-  @ApiQuery({ name: 'to', required: true, type: String, description: '종료 날짜 (YYYY-MM-DD)' })
-  @ApiResponse({ status: 200, description: 'KPI 통계 데이터' })
-  getStats(@Query('from') from: string, @Query('to') to: string) {
+  @ApiOperation({ summary: 'KPI 통계 조회' })
+  @ApiQuery({ name: 'from', required: true, type: String })
+  @ApiQuery({ name: 'to', required: true, type: String })
+  @ApiQuery({ name: 'siteId', required: false, type: String })
+  getStats(@Query('from') from: string, @Query('to') to: string, @Query('siteId') querySiteId?: string, @CurrentUser() user?: JwtPayload) {
     this.validateDateRange(from, to);
-    return this.dashboardService.getStats(from, to);
+    const siteId = user?.role === 'MASTER' ? (querySiteId || undefined) : user?.siteId;
+    return this.dashboardService.getStats(from, to, siteId);
   }
 
   @Get('trends')
-  @ApiOperation({
-    summary: '트렌드 데이터 (차트용)',
-    description: '일별/주별/월별 작업 건수 및 물량 추이.',
-  })
+  @ApiOperation({ summary: '트렌드 데이터 (차트용)' })
   @ApiQuery({ name: 'from', required: true, type: String })
   @ApiQuery({ name: 'to', required: true, type: String })
-  @ApiQuery({
-    name: 'groupBy',
-    required: false,
-    enum: ['day', 'week', 'month'],
-    description: '그룹핑 단위 (기본: day)',
-  })
-  @ApiResponse({ status: 200, description: '트렌드 데이터 배열' })
+  @ApiQuery({ name: 'groupBy', required: false, enum: ['hour', 'day', 'week', 'month'] })
+  @ApiQuery({ name: 'siteId', required: false, type: String })
   getTrends(
     @Query('from') from: string,
     @Query('to') to: string,
-    @Query('groupBy') groupBy?: 'day' | 'week' | 'month',
+    @Query('groupBy') groupBy?: 'hour' | 'day' | 'week' | 'month',
+    @Query('siteId') querySiteId?: string,
+    @CurrentUser() user?: JwtPayload,
   ) {
     this.validateDateRange(from, to);
-    return this.dashboardService.getTrends(from, to, groupBy);
+    const siteId = user?.role === 'MASTER' ? (querySiteId || undefined) : user?.siteId;
+    return this.dashboardService.getTrends(from, to, groupBy, siteId);
   }
 
   @Get('export')
-  @ApiOperation({
-    summary: 'CSV 내보내기',
-    description: '지정 기간의 작업 데이터를 CSV 파일로 다운로드.',
-  })
+  @ApiOperation({ summary: 'CSV 내보내기' })
   @ApiQuery({ name: 'from', required: true, type: String })
   @ApiQuery({ name: 'to', required: true, type: String })
-  @ApiQuery({
-    name: 'format',
-    required: false,
-    enum: ['csv'],
-    description: '내보내기 형식 (현재 csv만 지원)',
-  })
-  @ApiResponse({ status: 200, description: 'CSV 파일 다운로드' })
+  @ApiQuery({ name: 'siteId', required: false, type: String })
   async exportData(
     @Query('from') from: string,
     @Query('to') to: string,
+    @Query('siteId') querySiteId: string,
     @Res() res: Response,
+    @CurrentUser() user?: JwtPayload,
   ) {
     this.validateDateRange(from, to);
-
-    const csvContent = await this.dashboardService.exportCsv(from, to);
-
+    const siteId = user?.role === 'MASTER' ? (querySiteId || undefined) : user?.siteId;
+    const csvContent = await this.dashboardService.exportCsv(from, to, siteId);
     const filename = `work-items-${from}-to-${to}.csv`;
-
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.send(csvContent);
   }
 
-  /**
-   * 날짜 범위 유효성 검사
-   */
   private validateDateRange(from: string, to: string) {
-    if (!from || !to) {
-      throw new BadRequestException('from과 to 날짜가 모두 필요합니다');
-    }
-
+    if (!from || !to) throw new BadRequestException('from과 to 날짜가 모두 필요합니다');
     const fromDate = new Date(from);
     const toDate = new Date(to);
-
-    if (isNaN(fromDate.getTime()) || isNaN(toDate.getTime())) {
-      throw new BadRequestException('올바른 날짜 형식이 아닙니다 (YYYY-MM-DD)');
-    }
-
-    if (fromDate > toDate) {
-      throw new BadRequestException('시작 날짜가 종료 날짜보다 늦을 수 없습니다');
-    }
+    if (isNaN(fromDate.getTime()) || isNaN(toDate.getTime())) throw new BadRequestException('올바른 날짜 형식이 아닙니다');
+    if (fromDate > toDate) throw new BadRequestException('시작 날짜가 종료 날짜보다 늦을 수 없습니다');
   }
 }
