@@ -1,4 +1,6 @@
 import { Module } from '@nestjs/common';
+import { APP_GUARD } from '@nestjs/core';
+import { ThrottlerModule, ThrottlerGuard } from '@nestjs/throttler';
 import { PrismaModule } from './prisma/prisma.module';
 import { AuthModule } from './auth/auth.module';
 import { WorkersModule } from './workers/workers.module';
@@ -13,6 +15,7 @@ import { SubscriptionsModule } from './subscriptions/subscriptions.module';
 
 @Module({
   imports: [
+    ThrottlerModule.forRoot([{ ttl: 60000, limit: 60 }]),
     PrismaModule,
     AuthModule,
     WorkersModule,
@@ -25,5 +28,6 @@ import { SubscriptionsModule } from './subscriptions/subscriptions.module';
     BreakConfigsModule,
     SubscriptionsModule,
   ],
+  providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })
 export class AppModule {}

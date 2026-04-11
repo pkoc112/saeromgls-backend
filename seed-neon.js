@@ -1,7 +1,11 @@
 const https = require('https');
 
-const EP = 'https://ep-falling-wind-am644wzp.c-5.us-east-1.aws.neon.tech/sql';
-const CONN = 'postgresql://neondb_owner:npg_gWPeBp9aAfn3@ep-falling-wind-am644wzp.c-5.us-east-1.aws.neon.tech/neondb?sslmode=require';
+// DB 접속 정보는 환경변수 또는 DATABASE_URL에서 추출
+const DB_URL = process.env.DATABASE_URL || '';
+const HOST_MATCH = DB_URL.match(/@([^/]+)\//);
+const DB_HOST = HOST_MATCH ? HOST_MATCH[1] : 'ep-falling-wind-am644wzp.c-5.us-east-1.aws.neon.tech';
+const EP = `https://${DB_HOST}/sql`;
+const CONN = DB_URL || 'postgresql://neondb_owner:npg_gWPeBp9aAfn3@ep-falling-wind-am644wzp.c-5.us-east-1.aws.neon.tech/neondb?sslmode=require';
 
 function runSQL(sql, params = []) {
   return new Promise((resolve, reject) => {
