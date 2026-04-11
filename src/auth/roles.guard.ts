@@ -29,7 +29,8 @@ export class RolesGuard implements CanActivate {
       throw new ForbiddenException('인증 정보가 없습니다');
     }
 
-    const hasRole = requiredRoles.some((role) => user.role === role);
+    // MASTER는 모든 권한을 가진 최상위 역할 — 항상 통과
+    const hasRole = user.role === 'MASTER' || requiredRoles.some((role) => user.role === role);
     if (!hasRole) {
       throw new ForbiddenException(
         `이 작업을 수행하려면 다음 역할 중 하나가 필요합니다: ${requiredRoles.join(', ')}`,
