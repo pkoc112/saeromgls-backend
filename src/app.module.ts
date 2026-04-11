@@ -7,6 +7,9 @@ import { WorkItemsModule } from './work-items/work-items.module';
 import { AuditLogsModule } from './audit-logs/audit-logs.module';
 import { DashboardModule } from './dashboard/dashboard.module';
 import { AiModule } from './ai/ai.module';
+import { SitesModule } from './sites/sites.module';
+import { BreakConfigsModule } from './break-configs/break-configs.module';
+import { SubscriptionsModule } from './subscriptions/subscriptions.module';
 
 @Module({
   imports: [
@@ -18,6 +21,9 @@ import { AiModule } from './ai/ai.module';
     AuditLogsModule,
     DashboardModule,
     AiModule,
+    SitesModule,
+    BreakConfigsModule,
+    SubscriptionsModule,
   ],
 })
 export class AppModule {}
