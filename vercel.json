@@ -1,0 +1,8 @@
+{
+  "version": 2,
+  "buildCommand": "npx prisma generate && npx prisma db push --accept-data-loss && node seed-neon.js && npm run build || true",
+  "outputDirectory": "public",
+  "rewrites": [
+    { "source": "/(.*)", "destination": "/api" }
+  ]
+}
