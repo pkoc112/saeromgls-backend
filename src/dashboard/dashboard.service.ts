@@ -1,6 +1,7 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { Prisma } from '@prisma/client';
+import { kstDateRange } from '../common/kst-date.util';
 
 @Injectable()
 export class DashboardService {
@@ -12,7 +13,7 @@ export class DashboardService {
    * KPI 통계 조회
    * 기간별 작업 건수, 총 물량, 평균 작업 시간, 작업자별 통계 등
    */
-  async getStats(from: string, to: string) {
+  async getStats(from: string, to: string, siteId?: string) {
     const fromDate = new Date(from);
     const toDate = new Date(to);
     toDate.setHours(23, 59, 59, 999);
@@ -191,7 +192,7 @@ export class DashboardService {
    * CSV 내보내기
    * 지정 기간의 모든 작업 데이터를 CSV 문자열로 반환
    */
-  async exportCsv(from: string, to: string): Promise<string> {
+  async exportCsv(from: string, to: string, siteId?: string): Promise<string> {
     const fromDate = new Date(from);
     const toDate = new Date(to);
     toDate.setHours(23, 59, 59, 999);
