@@ -58,9 +58,15 @@ export class WorkersService {
   /**
    * 모바일용: 활성 작업자 목록 (최소 필드만)
    */
-  async findActiveForMobile() {
+  async findActiveForMobile(siteId?: string) {
+    const where: Record<string, unknown> = {
+      status: 'ACTIVE',
+      role: { notIn: ['MASTER', 'ADMIN'] },
+    };
+    if (siteId) where.siteId = siteId;
+
     return this.prisma.worker.findMany({
-      where: { status: 'ACTIVE' },
+      where,
       select: {
         id: true,
         name: true,
