@@ -2,7 +2,6 @@ import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from '../src/app.module';
 import { HttpExceptionFilter } from '../src/common/filters/http-exception.filter';
-import { SentryExceptionFilter } from '../src/common/filters/sentry-exception.filter';
 
 let cachedApp: any;
 
@@ -44,7 +43,17 @@ async function getApp() {
         transformOptions: { enableImplicitConversion: true },
       }),
     );
-    app.useGlobalFilters(new SentryExceptionFilter(), new HttpExceptionFilter());
+    // Sentry 필터는 DSN 설정 시에만 활성화
+    try {
+      const { SentryExceptionFilter } = require('../src/common/filters/sentry-exception.filter');
+      if (process.env.SENTRY_DSN) {
+        app.useGlobalFilters(new SentryExceptionFilter(), new HttpExceptionFilter());
+      } else {
+        app.useGlobalFilters(new HttpExceptionFilter());
+      }
+    } catch {
+      app.useGlobalFilters(new HttpExceptionFilter());
+    }
     await app.init();
     cachedApp = app.getHttpAdapter().getInstance();
   }
