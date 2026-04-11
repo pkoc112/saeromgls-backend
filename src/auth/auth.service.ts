@@ -31,9 +31,9 @@ export class AuthService {
       throw new UnauthorizedException('비활성화된 계정입니다');
     }
 
-    // 관리자/반장만 웹 대시보드 로그인 가능
-    if (worker.role !== 'ADMIN' && worker.role !== 'SUPERVISOR') {
-      throw new UnauthorizedException('관리자 또는 반장만 로그인할 수 있습니다');
+    // 마스터/관리자/반장만 웹 대시보드 로그인 가능
+    if (!['MASTER', 'ADMIN', 'SUPERVISOR'].includes(worker.role)) {
+      throw new UnauthorizedException('관리자 이상 권한만 로그인할 수 있습니다');
     }
 
     const isPinValid = await bcrypt.compare(pin, worker.pin);
