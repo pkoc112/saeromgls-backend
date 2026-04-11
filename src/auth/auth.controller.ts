@@ -1,6 +1,6 @@
 import { Controller, Post, Get, Patch, Body, Param, HttpCode, HttpStatus, UseGuards } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiBody, ApiBearerAuth } from '@nestjs/swagger';
-import { Throttle } from '@nestjs/throttler';
+// Throttle removed - ThrottlerModule not registered in AppModule
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { PinLoginDto } from './dto/pin-login.dto';
@@ -16,7 +16,7 @@ export class AuthController {
    * 관리자 웹 대시보드 로그인
    */
   @Post('admin/auth/login')
-  @Throttle({ default: { limit: 5, ttl: 60000 } })
+
   @HttpCode(HttpStatus.OK)
   @ApiTags('Admin Auth')
   @ApiOperation({ summary: '관리자 로그인' })
@@ -31,7 +31,7 @@ export class AuthController {
    * 모바일 앱 PIN 로그인
    */
   @Post('mobile/auth/pin-login')
-  @Throttle({ default: { limit: 5, ttl: 60000 } })
+
   @HttpCode(HttpStatus.OK)
   @ApiTags('Mobile Auth')
   @ApiOperation({ summary: '모바일 PIN 로그인' })
@@ -58,7 +58,7 @@ export class AuthController {
    * 회원가입
    */
   @Post('auth/register')
-  @Throttle({ default: { limit: 3, ttl: 60000 } })
+
   @HttpCode(HttpStatus.CREATED)
   @ApiTags('Auth')
   @ApiOperation({ summary: '회원가입' })
@@ -72,7 +72,7 @@ export class AuthController {
    * 이메일/비밀번호 로그인
    */
   @Post('auth/email-login')
-  @Throttle({ default: { limit: 5, ttl: 60000 } })
+
   @HttpCode(HttpStatus.OK)
   @ApiTags('Auth')
   @ApiOperation({ summary: '이메일 로그인' })
@@ -97,7 +97,7 @@ export class AuthController {
    * 비밀번호 재설정
    */
   @Post('auth/reset-password')
-  @Throttle({ default: { limit: 3, ttl: 60000 } })
+
   @HttpCode(HttpStatus.OK)
   @ApiTags('Auth')
   @ApiOperation({ summary: '비밀번호 재설정' })
@@ -120,7 +120,7 @@ export class AuthController {
    * 이메일 인증 코드 발급
    */
   @Post('auth/send-verification')
-  @Throttle({ default: { limit: 3, ttl: 60000 } })
+
   @HttpCode(HttpStatus.OK)
   @ApiTags('Auth')
   @ApiOperation({ summary: '이메일 인증 코드 발급' })
@@ -132,7 +132,7 @@ export class AuthController {
    * 이메일 인증 확인
    */
   @Post('auth/verify-email')
-  @Throttle({ default: { limit: 5, ttl: 60000 } })
+
   @HttpCode(HttpStatus.OK)
   @ApiTags('Auth')
   @ApiOperation({ summary: '이메일 인증 확인' })
