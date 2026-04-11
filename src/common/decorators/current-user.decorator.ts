@@ -11,9 +11,11 @@ export interface JwtPayload {
   /** 작업자 ID (UUID) */
   sub: string;
   /** 작업자 역할 */
-  role: 'ADMIN' | 'SUPERVISOR' | 'WORKER';
+  role: 'MASTER' | 'ADMIN' | 'SUPERVISOR' | 'WORKER';
   /** 사번 */
   employeeCode: string;
+  /** 사업장 ID */
+  siteId?: string;
   /** 토큰 발급 시각 */
   iat?: number;
   /** 토큰 만료 시각 */
