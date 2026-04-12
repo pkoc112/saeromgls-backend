@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsIn, IsNotEmpty, IsOptional, IsString, Length } from 'class-validator';
+import { IsIn, IsNotEmpty, IsOptional, IsString, IsUUID, Length } from 'class-validator';
 
 export class CreateWorkerDto {
   @ApiProperty({
@@ -48,4 +48,12 @@ export class CreateWorkerDto {
   @IsIn(['ACTIVE', 'INACTIVE'])
   @IsOptional()
   status?: string;
+
+  @ApiProperty({
+    description: '소속 사업장 ID (MASTER는 지정 가능, ADMIN은 자동 배정)',
+    required: false,
+  })
+  @IsUUID('4', { message: '올바른 사업장 ID를 입력해주세요' })
+  @IsOptional()
+  siteId?: string;
 }

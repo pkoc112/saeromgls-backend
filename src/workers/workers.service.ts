@@ -19,15 +19,22 @@ export class WorkersService {
   constructor(private readonly prisma: PrismaService) {}
 
   /**
-   * 관리자용: 작업자 목록 조회 (페이지네이션, 상태 필터)
+   * 관리자용: 작업자 목록 조회 (페이지네이션, 상태/사업장 필터)
    */
-  async findAll(params: { page?: number; limit?: number; status?: string }) {
+  async findAll(params: {
+    page?: number;
+    limit?: number;
+    status?: string;
+    siteId?: string;
+  }) {
     const page = params.page || 1;
     const limit = params.limit || 20;
     const skip = (page - 1) * limit;
 
     const where: Record<string, unknown> = {};
     if (params.status) where.status = params.status;
+    // 사업장 격리: siteId가 있으면 해당 사업장 작업자만 조회
+    if (params.siteId) where.siteId = params.siteId;
     // 관리 역할(MASTER/ADMIN)은 작업자 목록에서 제외
     where.role = { notIn: [...MANAGEMENT_ROLES] };
 
@@ -98,6 +105,8 @@ export class WorkersService {
         employeeCode: true,
         role: true,
         status: true,
+        siteId: true,
+        site: { select: { name: true, code: true } },
         createdAt: true,
         updatedAt: true,
       },
@@ -112,8 +121,10 @@ export class WorkersService {
 
   /**
    * 작업자 생성 (관리자 전용)
+   * @param dto 작업자 정보
+   * @param callerSiteId 호출자의 사업장 ID (ADMIN이면 자동 배정)
    */
-  async create(dto: CreateWorkerDto) {
+  async create(dto: CreateWorkerDto, callerSiteId?: string) {
     // 사번 중복 확인
     const existing = await this.prisma.worker.findUnique({
       where: { employeeCode: dto.employeeCode },
@@ -126,6 +137,9 @@ export class WorkersService {
     // PIN 해시
     const hashedPin = await bcrypt.hash(dto.pin, 10);
 
+    // siteId 결정: DTO에 있으면 사용, 없으면 호출자의 siteId 자동 배정
+    const siteId = dto.siteId || callerSiteId || null;
+
     const worker = await this.prisma.worker.create({
       data: {
         name: dto.name,
@@ -133,6 +147,7 @@ export class WorkersService {
         pin: hashedPin,
         role: dto.role,
         status: dto.status,
+        ...(siteId && { siteId }),
       },
       select: {
         id: true,
@@ -140,11 +155,15 @@ export class WorkersService {
         employeeCode: true,
         role: true,
         status: true,
+        siteId: true,
+        site: { select: { name: true, code: true } },
         createdAt: true,
       },
     });
 
-    this.logger.log(`Worker created: ${worker.employeeCode} (${worker.name})`);
+    this.logger.log(
+      `Worker created: ${worker.employeeCode} (${worker.name}) → site: ${worker.site?.name || 'none'}`,
+    );
     return worker;
   }
 
@@ -182,6 +201,8 @@ export class WorkersService {
         employeeCode: true,
         role: true,
         status: true,
+        siteId: true,
+        site: { select: { name: true, code: true } },
         createdAt: true,
         updatedAt: true,
       },

@@ -11,6 +11,7 @@ import {
   ParseUUIDPipe,
   HttpCode,
   HttpStatus,
+  ForbiddenException,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -26,6 +27,8 @@ import { UpdateWorkerDto } from './dto/update-worker.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
+import { CurrentUser, JwtPayload } from '../common/decorators/current-user.decorator';
+import { resolveSiteId } from '../common/utils/site-scope';
 
 @Controller()
 export class WorkersController {
@@ -38,17 +41,22 @@ export class WorkersController {
   @Roles('ADMIN', 'SUPERVISOR')
   @ApiBearerAuth('jwt')
   @ApiTags('Admin Workers')
-  @ApiOperation({ summary: '작업자 목록 조회 (관리자)' })
+  @ApiOperation({ summary: '작업자 목록 조회 (관리자 — 사업장 격리)' })
   @ApiQuery({ name: 'page', required: false, type: Number, description: '페이지 번호 (기본: 1)' })
   @ApiQuery({ name: 'limit', required: false, type: Number, description: '페이지당 항목 수 (기본: 20)' })
   @ApiQuery({ name: 'status', required: false, enum: ['ACTIVE', 'INACTIVE'], description: '상태 필터' })
+  @ApiQuery({ name: 'siteId', required: false, description: '사업장 ID (MASTER만 지정 가능)' })
   @ApiResponse({ status: 200, description: '작업자 목록 + 페이지네이션 메타' })
   findAll(
+    @CurrentUser() user: JwtPayload,
     @Query('page') page?: number,
     @Query('limit') limit?: number,
     @Query('status') status?: string,
+    @Query('siteId') querySiteId?: string,
   ) {
-    return this.workersService.findAll({ page, limit, status });
+    // MASTER: querySiteId 지정 가능 (없으면 전체), ADMIN/SUPERVISOR: 자기 사업장만
+    const siteId = resolveSiteId(user, querySiteId);
+    return this.workersService.findAll({ page, limit, status, siteId });
   }
 
   @Post('admin/workers')
@@ -56,11 +64,20 @@ export class WorkersController {
   @Roles('ADMIN')
   @ApiBearerAuth('jwt')
   @ApiTags('Admin Workers')
-  @ApiOperation({ summary: '작업자 생성 (관리자 전용)' })
+  @ApiOperation({ summary: '작업자 생성 (ADMIN: 자기 사업장 자동 배정, MASTER: siteId 지정)' })
   @ApiResponse({ status: 201, description: '작업자 생성 완료' })
   @ApiResponse({ status: 409, description: '사번 중복' })
-  create(@Body() dto: CreateWorkerDto) {
-    return this.workersService.create(dto);
+  create(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: CreateWorkerDto,
+  ) {
+    // ADMIN이 다른 사업장 siteId를 직접 지정하려 하면 차단
+    if (user.role !== 'MASTER' && dto.siteId && dto.siteId !== user.siteId) {
+      throw new ForbiddenException('자신의 사업장에만 작업자를 추가할 수 있습니다');
+    }
+    // ADMIN은 자기 사업장 자동 배정
+    const callerSiteId = user.role === 'MASTER' ? undefined : user.siteId;
+    return this.workersService.create(dto, callerSiteId);
   }
 
   @Patch('admin/workers/:id')
@@ -73,9 +90,14 @@ export class WorkersController {
   @ApiResponse({ status: 200, description: '작업자 수정 완료' })
   @ApiResponse({ status: 404, description: '작업자 없음' })
   update(
+    @CurrentUser() user: JwtPayload,
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateWorkerDto,
   ) {
+    // ADMIN이 사업장 변경을 시도하면 차단 (MASTER만 가능)
+    if (user.role !== 'MASTER' && dto.siteId && dto.siteId !== user.siteId) {
+      throw new ForbiddenException('사업장 변경은 마스터 관리자만 가능합니다');
+    }
     return this.workersService.update(id, dto);
   }
 
@@ -99,8 +121,9 @@ export class WorkersController {
     summary: '활성 작업자 목록 (모바일)',
     description: '인증 불필요. PIN 로그인 화면에서 작업자 선택용.',
   })
+  @ApiQuery({ name: 'siteId', required: false, description: '사업장 ID로 필터' })
   @ApiResponse({ status: 200, description: '활성 작업자 목록 (최소 필드)' })
-  findActiveForMobile() {
-    return this.workersService.findActiveForMobile();
+  findActiveForMobile(@Query('siteId') siteId?: string) {
+    return this.workersService.findActiveForMobile(siteId);
   }
 }
