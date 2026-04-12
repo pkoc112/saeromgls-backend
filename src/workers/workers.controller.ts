@@ -3,11 +3,14 @@ import {
   Get,
   Post,
   Patch,
+  Delete,
   Body,
   Param,
   Query,
   UseGuards,
   ParseUUIDPipe,
+  HttpCode,
+  HttpStatus,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -74,6 +77,18 @@ export class WorkersController {
     @Body() dto: UpdateWorkerDto,
   ) {
     return this.workersService.update(id, dto);
+  }
+
+  @Delete('admin/workers/:id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN')
+  @ApiBearerAuth('jwt')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiTags('Admin Workers')
+  @ApiOperation({ summary: '작업자 영구 삭제 (관리자 전용)' })
+  @ApiParam({ name: 'id', description: '작업자 UUID' })
+  remove(@Param('id', ParseUUIDPipe) id: string) {
+    return this.workersService.delete(id);
   }
 
   // ===================== Mobile Endpoints =====================
