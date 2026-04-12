@@ -647,4 +647,36 @@ export class WorkItemsService {
 
     this.logger.log(`WorkItem deleted: ${id}`);
   }
+
+  /**
+   * 모바일: 작업 무효화 (VOID)
+   * 작업 시작자를 actor로 사용
+   */
+  async voidWorkItemFromMobile(id: string, ip?: string, userAgent?: string) {
+    const workItem = await this.prisma.workItem.findUnique({ where: { id } });
+    if (!workItem) throw new NotFoundException('작업을 찾을 수 없습니다');
+    if (workItem.status === 'VOID') throw new BadRequestException('이미 무효화된 작업입니다');
+
+    const beforeState = JSON.stringify(workItem);
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const item = await tx.workItem.update({
+        where: { id },
+        data: { status: 'VOID' },
+      });
+      await tx.auditLog.create({
+        data: {
+          actorWorkerId: workItem.startedByWorkerId,
+          workItemId: id,
+          action: 'VOID',
+          before: beforeState,
+          after: JSON.stringify(item),
+          reason: '모바일 삭제 요청',
+          ip,
+          userAgent,
+        },
+      });
+      return item;
+    });
+    return this.findOneRaw(updated.id);
+  }
 }
