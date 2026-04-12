@@ -6,6 +6,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { kstStartOfDay, kstEndOfDay } from '../common/kst-date.util';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import { CreateWorkItemDto } from './dto/create-work-item.dto';
 import { EndWorkItemDto } from './dto/end-work-item.dto';
@@ -382,17 +383,14 @@ export class WorkItemsService {
       ];
     }
 
-    // 날짜 범위 필터
+    // 날짜 범위 필터 (KST 기준)
     if (query.from || query.to) {
       where.startedAt = {};
       if (query.from) {
-        where.startedAt.gte = new Date(query.from);
+        where.startedAt.gte = kstStartOfDay(query.from);
       }
       if (query.to) {
-        // 종료일은 해당 날짜의 끝까지 포함
-        const toDate = new Date(query.to);
-        toDate.setHours(23, 59, 59, 999);
-        where.startedAt.lte = toDate;
+        where.startedAt.lte = kstEndOfDay(query.to);
       }
     }
 

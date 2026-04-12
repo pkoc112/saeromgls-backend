@@ -14,9 +14,7 @@ export class DashboardService {
    * 기간별 작업 건수, 총 물량, 평균 작업 시간, 작업자별 통계 등
    */
   async getStats(from: string, to: string, siteId?: string) {
-    const fromDate = new Date(from);
-    const toDate = new Date(to);
-    toDate.setHours(23, 59, 59, 999);
+    const { fromDate, toDate } = kstDateRange(from, to);
 
     const dateFilter: Prisma.WorkItemWhereInput = {
       startedAt: { gte: fromDate, lte: toDate },
@@ -206,9 +204,7 @@ export class DashboardService {
    * 지정 기간의 모든 작업 데이터를 CSV 문자열로 반환
    */
   async exportCsv(from: string, to: string, siteId?: string): Promise<string> {
-    const fromDate = new Date(from);
-    const toDate = new Date(to);
-    toDate.setHours(23, 59, 59, 999);
+    const { fromDate, toDate } = kstDateRange(from, to);
 
     const items = await this.prisma.workItem.findMany({
       where: {
@@ -294,9 +290,7 @@ export class DashboardService {
    * 일별이면 전일, 주별이면 전주, 월별이면 전월 자동 판단
    */
   async getComparison(from: string, to: string, siteId?: string) {
-    const fromDate = new Date(from);
-    const toDate = new Date(to);
-    toDate.setHours(23, 59, 59, 999);
+    const { fromDate, toDate } = kstDateRange(from, to);
 
     const diffMs = toDate.getTime() - fromDate.getTime();
     const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
@@ -362,9 +356,7 @@ export class DashboardService {
    * 이상 작업 탐지 알림
    */
   async getAlerts(from: string, to: string, siteId?: string) {
-    const fromDate = new Date(from);
-    const toDate = new Date(to);
-    toDate.setHours(23, 59, 59, 999);
+    const { fromDate, toDate } = kstDateRange(from, to);
 
     const baseFilter: Prisma.WorkItemWhereInput = {
       startedAt: { gte: fromDate, lte: toDate },

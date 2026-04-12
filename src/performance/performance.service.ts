@@ -3,6 +3,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { Prisma } from '@prisma/client';
 import { CreateIncentivePolicyDto } from './dto/create-incentive-policy.dto';
 import { UpdateIncentivePolicyDto } from './dto/update-incentive-policy.dto';
+import { kstDateRange } from '../common/kst-date.util';
 
 export interface WorkerRanking {
   workerId: string;
@@ -32,9 +33,7 @@ export class PerformanceService {
     to: string,
     sortBy: string = 'score',
   ) {
-    const fromDate = new Date(from);
-    const toDate = new Date(to);
-    toDate.setHours(23, 59, 59, 999);
+    const { fromDate, toDate } = kstDateRange(from, to);
 
     // 인센티브 정책 조회
     const policy = siteId
@@ -184,9 +183,7 @@ export class PerformanceService {
    * 전체 요약 통계
    */
   async getSummary(siteId: string | undefined, from: string, to: string) {
-    const fromDate = new Date(from);
-    const toDate = new Date(to);
-    toDate.setHours(23, 59, 59, 999);
+    const { fromDate, toDate } = kstDateRange(from, to);
 
     const dateFilter: Prisma.WorkItemWhereInput = {
       startedAt: { gte: fromDate, lte: toDate },
