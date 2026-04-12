@@ -156,7 +156,7 @@ export class WorkItemsController {
   ) {
     const ip = req.ip || req.socket.remoteAddress;
     const userAgent = req.headers['user-agent'];
-    return this.workItemsService.voidWorkItem(id, { reason: '모바일 삭제 요청' }, undefined, ip, userAgent);
+    return this.workItemsService.voidWorkItem(id, { reason: '모바일 삭제 요청' }, 'mobile', ip, userAgent);
   }
 
   // ===================== Admin Endpoints =====================
