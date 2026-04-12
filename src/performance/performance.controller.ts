@@ -20,6 +20,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { CurrentUser, JwtPayload } from '../common/decorators/current-user.decorator';
+import { resolveSiteId } from '../common/utils/site-scope';
 import { CreateIncentivePolicyDto } from './dto/create-incentive-policy.dto';
 import { UpdateIncentivePolicyDto } from './dto/update-incentive-policy.dto';
 
@@ -45,7 +46,7 @@ export class PerformanceController {
     @CurrentUser() user?: JwtPayload,
   ) {
     this.validateDateRange(from, to);
-    const siteId = user?.role === 'MASTER' ? (querySiteId || undefined) : user?.siteId;
+    const siteId = resolveSiteId(user, querySiteId);
     return this.performanceService.getRankings(siteId, from, to, sortBy);
   }
 
@@ -61,7 +62,7 @@ export class PerformanceController {
     @CurrentUser() user?: JwtPayload,
   ) {
     this.validateDateRange(from, to);
-    const siteId = user?.role === 'MASTER' ? (querySiteId || undefined) : user?.siteId;
+    const siteId = resolveSiteId(user, querySiteId);
     return this.performanceService.getSummary(siteId, from, to);
   }
 
@@ -74,7 +75,7 @@ export class PerformanceController {
     @Query('siteId') querySiteId: string,
     @CurrentUser() user?: JwtPayload,
   ) {
-    const siteId = user?.role === 'MASTER' ? querySiteId : user?.siteId;
+    const siteId = resolveSiteId(user, querySiteId);
     if (!siteId) throw new BadRequestException('siteId가 필요합니다');
     return this.performanceService.getIncentivePolicies(siteId);
   }

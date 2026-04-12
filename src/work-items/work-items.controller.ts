@@ -44,6 +44,7 @@ export class WorkItemsController {
   // ===================== Mobile Endpoints =====================
 
   @Post('mobile/work-items')
+  @UseGuards(JwtAuthGuard)
   @ApiTags('Mobile Work Items')
   @ApiOperation({
     summary: '작업 시작 (모바일)',
@@ -58,6 +59,7 @@ export class WorkItemsController {
   }
 
   @Get('mobile/work-items')
+  @UseGuards(JwtAuthGuard)
   @ApiTags('Mobile Work Items')
   @ApiOperation({
     summary: '작업 목록 (모바일)',
@@ -82,6 +84,7 @@ export class WorkItemsController {
   }
 
   @Post('mobile/work-items/:id/end')
+  @UseGuards(JwtAuthGuard)
   @ApiTags('Mobile Work Items')
   @ApiOperation({
     summary: '작업 종료 (모바일)',
@@ -102,6 +105,7 @@ export class WorkItemsController {
   }
 
   @Post('mobile/work-items/:id/pause')
+  @UseGuards(JwtAuthGuard)
   @ApiTags('Mobile Work Items')
   @ApiOperation({
     summary: '작업 중간마감 (모바일)',
@@ -122,6 +126,7 @@ export class WorkItemsController {
   }
 
   @Post('mobile/work-items/:id/resume')
+  @UseGuards(JwtAuthGuard)
   @ApiTags('Mobile Work Items')
   @ApiOperation({
     summary: '작업 이어하기 (모바일)',
@@ -147,6 +152,7 @@ export class WorkItemsController {
   }
 
   @Delete('mobile/work-items/:id')
+  @UseGuards(JwtAuthGuard)
   @ApiTags('Mobile Work Items')
   @ApiOperation({ summary: '작업 무효화 (모바일)' })
   @ApiParam({ name: 'id', description: '작업 UUID' })

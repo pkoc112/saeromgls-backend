@@ -9,6 +9,9 @@ import { PrismaService } from '../prisma/prisma.service';
 import { CreateWorkerDto } from './dto/create-worker.dto';
 import { UpdateWorkerDto } from './dto/update-worker.dto';
 
+/** 관리 역할 — 작업자 목록에서 제외 */
+const MANAGEMENT_ROLES = ['MASTER', 'ADMIN'] as const;
+
 @Injectable()
 export class WorkersService {
   private readonly logger = new Logger(WorkersService.name);
@@ -26,7 +29,7 @@ export class WorkersService {
     const where: Record<string, unknown> = {};
     if (params.status) where.status = params.status;
     // 관리 역할(MASTER/ADMIN)은 작업자 목록에서 제외
-    where.role = { notIn: ['MASTER', 'ADMIN'] };
+    where.role = { notIn: [...MANAGEMENT_ROLES] };
 
     const [data, total] = await Promise.all([
       this.prisma.worker.findMany({

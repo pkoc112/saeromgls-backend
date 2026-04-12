@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, InternalServerErrorException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { Prisma } from '@prisma/client';
 import { kstDateRange } from '../common/kst-date.util';
@@ -57,8 +57,8 @@ export class DashboardService {
     const classificationStats = byClassification.map((c) => ({
       classification: classMap.get(c.classificationId) || { id: c.classificationId },
       count: c._count,
-      totalVolume: c._sum.volume,
-      totalQuantity: c._sum.quantity,
+      totalVolume: Number(c._sum.volume ?? 0),
+      totalQuantity: Number(c._sum.quantity ?? 0),
     }));
 
     // 작업자별 통계 (상위 10명)
@@ -81,8 +81,8 @@ export class DashboardService {
     const workerStats = byWorker.map((w) => ({
       worker: workerMap.get(w.startedByWorkerId) || { id: w.startedByWorkerId },
       count: w._count,
-      totalVolume: w._sum.volume,
-      totalQuantity: w._sum.quantity,
+      totalVolume: Number(w._sum.volume ?? 0),
+      totalQuantity: Number(w._sum.quantity ?? 0),
     }));
 
     // 평균 작업 시간 (종료된 작업, 분 단위) -- raw SQL로 계산
@@ -102,7 +102,7 @@ export class DashboardService {
         ? Math.round(durationResult[0].avg_minutes * 100) / 100
         : null;
     } catch (err) {
-      this.logger.warn('Failed to compute avg duration', err);
+      this.logger.error('평균 작업 시간 계산 실패', err instanceof Error ? err.stack : err);
     }
 
     return {
@@ -114,10 +114,10 @@ export class DashboardService {
         total: totalActive + totalEnded + totalVoid,
       },
       aggregates: {
-        totalVolume: aggregates._sum.volume,
-        totalQuantity: aggregates._sum.quantity,
-        avgVolume: aggregates._avg.volume,
-        avgQuantity: aggregates._avg.quantity,
+        totalVolume: Number(aggregates._sum.volume ?? 0),
+        totalQuantity: Number(aggregates._sum.quantity ?? 0),
+        avgVolume: Number(aggregates._avg.volume ?? 0),
+        avgQuantity: Number(aggregates._avg.quantity ?? 0),
         endedCount: aggregates._count,
       },
       avgDurationMinutes,
@@ -184,8 +184,8 @@ export class DashboardService {
         totalQuantity: Number(t.total_quantity),
       }));
     } catch (err) {
-      this.logger.warn('getTrends failed', err);
-      return [];
+      this.logger.error('getTrends 쿼리 실패', err instanceof Error ? err.stack : err);
+      throw new InternalServerErrorException('트렌드 데이터 조회에 실패했습니다');
     }
   }
 

@@ -324,6 +324,7 @@ model AdminActivityLog {
   @@index([actorWorkerId])
   @@index([actionType])
   @@index([createdAt])
+  @@index([siteId, createdAt])
   @@map("admin_activity_logs")
 }
 

@@ -173,11 +173,12 @@ export class AuthService {
   // ──────────────────────────────────────────────
   async refreshAccessToken(refreshToken: string) {
     try {
+      const refreshSecret = process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET;
+      if (!refreshSecret && process.env.NODE_ENV === 'production') {
+        throw new Error('JWT_REFRESH_SECRET 또는 JWT_SECRET 환경변수가 필요합니다');
+      }
       const payload = this.jwtService.verify(refreshToken, {
-        secret:
-          process.env.JWT_REFRESH_SECRET ||
-          process.env.JWT_SECRET ||
-          'fallback-secret-for-dev',
+        secret: refreshSecret || 'fallback-secret-for-dev',
       });
 
       const worker = await this.prisma.worker.findUnique({
@@ -615,11 +616,18 @@ export class AuthService {
 
     const accessToken = this.jwtService.sign(payload);
 
+    const refreshSecret = process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET;
+    if (!refreshSecret && process.env.NODE_ENV === 'production') {
+      throw new Error('JWT_REFRESH_SECRET 또는 JWT_SECRET 환경변수가 필요합니다');
+    }
+    if (!refreshSecret) {
+      this.logger.warn('JWT_REFRESH_SECRET/JWT_SECRET 환경변수 미설정 — 개발용 fallback 사용 중');
+    } else if (!process.env.JWT_REFRESH_SECRET) {
+      this.logger.warn('JWT_REFRESH_SECRET 미설정 — JWT_SECRET을 refresh 토큰에도 공유 사용 중');
+    }
+
     const refreshToken = this.jwtService.sign(payload, {
-      secret:
-        process.env.JWT_REFRESH_SECRET ||
-        process.env.JWT_SECRET ||
-        'fallback-secret-for-dev',
+      secret: refreshSecret || 'fallback-secret-for-dev',
       expiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '7d',
     });
 
@@ -650,7 +658,16 @@ export class AuthService {
       });
     } catch (error) {
       // 로그인 이력 기록 실패가 인증 자체를 막지 않도록 함
-      this.logger.error(`Failed to record login history: ${error}`);
+      this.logger.error(`로그인 이력 기록 실패: ${error}`);
+      // Sentry가 초기화되어 있으면 예외 전송
+      try {
+        const Sentry = require('@sentry/node');
+        if (Sentry.isInitialized?.() || process.env.SENTRY_DSN) {
+          Sentry.captureException(error);
+        }
+      } catch {
+        // Sentry 미설치 또는 미초기화 시 무시
+      }
     }
   }
 

@@ -11,6 +11,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { CurrentUser, JwtPayload } from '../common/decorators/current-user.decorator';
+import { resolveSiteId } from '../common/utils/site-scope';
 
 @Controller('admin/dashboard')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -27,7 +28,7 @@ export class DashboardController {
   @ApiQuery({ name: 'siteId', required: false, type: String })
   getStats(@Query('from') from: string, @Query('to') to: string, @Query('siteId') querySiteId?: string, @CurrentUser() user?: JwtPayload) {
     this.validateDateRange(from, to);
-    const siteId = user?.role === 'MASTER' ? (querySiteId || undefined) : user?.siteId;
+    const siteId = resolveSiteId(user, querySiteId);
     return this.dashboardService.getStats(from, to, siteId);
   }
 
@@ -45,7 +46,7 @@ export class DashboardController {
     @CurrentUser() user?: JwtPayload,
   ) {
     this.validateDateRange(from, to);
-    const siteId = user?.role === 'MASTER' ? (querySiteId || undefined) : user?.siteId;
+    const siteId = resolveSiteId(user, querySiteId);
     return this.dashboardService.getTrends(from, to, groupBy, siteId);
   }
 
@@ -62,7 +63,7 @@ export class DashboardController {
     @CurrentUser() user?: JwtPayload,
   ) {
     this.validateDateRange(from, to);
-    const siteId = user?.role === 'MASTER' ? (querySiteId || undefined) : user?.siteId;
+    const siteId = resolveSiteId(user, querySiteId);
     const csvContent = await this.dashboardService.exportCsv(from, to, siteId);
     const filename = `work-items-${from}-to-${to}.csv`;
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
@@ -82,7 +83,7 @@ export class DashboardController {
     @CurrentUser() user?: JwtPayload,
   ) {
     this.validateDateRange(from, to);
-    const siteId = user?.role === 'MASTER' ? (querySiteId || undefined) : user?.siteId;
+    const siteId = resolveSiteId(user, querySiteId);
     return this.dashboardService.getComparison(from, to, siteId);
   }
 
@@ -98,7 +99,7 @@ export class DashboardController {
     @CurrentUser() user?: JwtPayload,
   ) {
     this.validateDateRange(from, to);
-    const siteId = user?.role === 'MASTER' ? (querySiteId || undefined) : user?.siteId;
+    const siteId = resolveSiteId(user, querySiteId);
     return this.dashboardService.getAlerts(from, to, siteId);
   }
 
@@ -109,7 +110,7 @@ export class DashboardController {
     @Query('siteId') querySiteId: string,
     @CurrentUser() user?: JwtPayload,
   ) {
-    const siteId = user?.role === 'MASTER' ? querySiteId : user?.siteId;
+    const siteId = resolveSiteId(user, querySiteId);
     if (!siteId) throw new BadRequestException('siteId가 필요합니다');
     return this.dashboardService.getGoals(siteId);
   }
