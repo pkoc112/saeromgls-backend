@@ -132,6 +132,7 @@ export class AuthService {
         role: true,
         status: true,
         siteId: true,
+        site: { select: { name: true, code: true } },
       },
     });
 

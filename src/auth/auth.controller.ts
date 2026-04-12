@@ -95,7 +95,9 @@ export class AuthController {
         name: worker.name,
         role: worker.role.toLowerCase(),
         email: worker.email,
+        employeeCode: worker.employeeCode,
         siteId: worker.siteId,
+        siteName: worker.site?.name || null,
       },
     };
   }
