@@ -24,13 +24,15 @@ model Site {
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
-  parentSite      Site?              @relation("SiteHierarchy", fields: [parentSiteId], references: [id])
-  childSites      Site[]             @relation("SiteHierarchy")
-  workers         Worker[]
-  breakConfigs    BreakConfig[]
-  insights        DashboardInsight[]
-  subscriptions   Subscription[]
-  classifications Classification[]
+  parentSite         Site?              @relation("SiteHierarchy", fields: [parentSiteId], references: [id])
+  childSites         Site[]             @relation("SiteHierarchy")
+  workers            Worker[]
+  breakConfigs       BreakConfig[]
+  insights           DashboardInsight[]
+  subscriptions      Subscription[]
+  classifications    Classification[]
+  incentivePolicies  IncentivePolicy[]
+  dashboardGoals     DashboardGoal[]
 
   @@index([parentSiteId])
   @@map("sites")
@@ -257,4 +259,42 @@ model LoginHistory {
   @@index([workerId])
   @@index([createdAt])
   @@map("login_history")
+}
+
+/// 인센티브 정책
+model IncentivePolicy {
+  id                  String   @id @default(uuid())
+  siteId              String   @map("site_id")
+  name                String
+  scoreWeightCount    Float    @default(10) @map("score_weight_count")
+  scoreWeightVolume   Float    @default(2) @map("score_weight_volume")
+  scoreWeightQuantity Float    @default(0.05) @map("score_weight_quantity")
+  bonusThreshold1     Float?   @map("bonus_threshold_1")
+  bonusAmount1        Int?     @map("bonus_amount_1")
+  bonusThreshold2     Float?   @map("bonus_threshold_2")
+  bonusAmount2        Int?     @map("bonus_amount_2")
+  isActive            Boolean  @default(true) @map("is_active")
+  createdAt           DateTime @default(now()) @map("created_at")
+  updatedAt           DateTime @updatedAt @map("updated_at")
+
+  site Site @relation(fields: [siteId], references: [id])
+
+  @@index([siteId])
+  @@map("incentive_policies")
+}
+
+/// 대시보드 목표
+model DashboardGoal {
+  id             String   @id @default(uuid())
+  siteId         String   @map("site_id")
+  periodType     String   // daily, weekly, monthly
+  targetCount    Int      @default(0) @map("target_count")
+  targetVolume   Decimal  @default(0) @map("target_volume") @db.Decimal(10, 2)
+  targetQuantity Int      @default(0) @map("target_quantity")
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  site Site @relation(fields: [siteId], references: [id])
+
+  @@index([siteId])
+  @@map("dashboard_goals")
 }

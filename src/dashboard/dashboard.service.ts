@@ -276,4 +276,192 @@ export class DashboardService {
 
     return bom + csvContent;
   }
+
+  /**
+   * 전기 대비 증감 비교
+   * 일별이면 전일, 주별이면 전주, 월별이면 전월 자동 판단
+   */
+  async getComparison(from: string, to: string, siteId?: string) {
+    const fromDate = new Date(from);
+    const toDate = new Date(to);
+    toDate.setHours(23, 59, 59, 999);
+
+    const diffMs = toDate.getTime() - fromDate.getTime();
+    const diffDays = Math.ceil(diffMs / (1000 * 60 * 60 * 24));
+
+    // 이전 기간 자동 계산
+    const prevFrom = new Date(fromDate);
+    const prevTo = new Date(toDate);
+    if (diffDays <= 1) {
+      // 일별 → 전일
+      prevFrom.setDate(prevFrom.getDate() - 1);
+      prevTo.setDate(prevTo.getDate() - 1);
+    } else if (diffDays <= 7) {
+      // 주별 → 전주
+      prevFrom.setDate(prevFrom.getDate() - 7);
+      prevTo.setDate(prevTo.getDate() - 7);
+    } else {
+      // 월별 → 전월
+      prevFrom.setMonth(prevFrom.getMonth() - 1);
+      prevTo.setMonth(prevTo.getMonth() - 1);
+    }
+
+    const buildFilter = (f: Date, t: Date): Prisma.WorkItemWhereInput => ({
+      startedAt: { gte: f, lte: t },
+      status: 'ENDED',
+      ...(siteId && { startedByWorker: { siteId } }),
+    });
+
+    const [current, previous] = await Promise.all([
+      this.prisma.workItem.aggregate({
+        where: buildFilter(fromDate, toDate),
+        _count: true,
+        _sum: { volume: true, quantity: true },
+      }),
+      this.prisma.workItem.aggregate({
+        where: buildFilter(prevFrom, prevTo),
+        _count: true,
+        _sum: { volume: true, quantity: true },
+      }),
+    ]);
+
+    const calcRate = (cur: number, prev: number): string => {
+      if (prev === 0) return cur > 0 ? '+100.0%' : '0.0%';
+      return (((cur - prev) / prev) * 100 > 0 ? '+' : '') +
+        (((cur - prev) / prev) * 100).toFixed(1) + '%';
+    };
+
+    const curCount = current._count;
+    const prevCount = previous._count;
+    const curVolume = Number(current._sum.volume ?? 0);
+    const prevVolume = Number(previous._sum.volume ?? 0);
+    const curQuantity = current._sum.quantity ?? 0;
+    const prevQuantity = previous._sum.quantity ?? 0;
+
+    return {
+      period: { current: { from, to }, previous: { from: prevFrom.toISOString().split('T')[0], to: prevTo.toISOString().split('T')[0] } },
+      count: { current: curCount, previous: prevCount, changeRate: calcRate(curCount, prevCount) },
+      volume: { current: curVolume, previous: prevVolume, changeRate: calcRate(curVolume, prevVolume) },
+      quantity: { current: curQuantity, previous: prevQuantity, changeRate: calcRate(curQuantity, prevQuantity) },
+    };
+  }
+
+  /**
+   * 이상 작업 탐지 알림
+   */
+  async getAlerts(from: string, to: string, siteId?: string) {
+    const fromDate = new Date(from);
+    const toDate = new Date(to);
+    toDate.setHours(23, 59, 59, 999);
+
+    const baseFilter: Prisma.WorkItemWhereInput = {
+      startedAt: { gte: fromDate, lte: toDate },
+      ...(siteId && { startedByWorker: { siteId } }),
+    };
+
+    const alerts: { type: string; severity: string; message: string; count: number }[] = [];
+
+    // 1) 평균 대비 2배 이상 긴 작업
+    try {
+      const siteCondition = siteId
+        ? Prisma.sql`AND wi.started_by_worker_id IN (SELECT id FROM workers WHERE site_id = ${siteId})`
+        : Prisma.empty;
+
+      const longItems = await this.prisma.$queryRaw<{ cnt: bigint }[]>`
+        WITH avg_dur AS (
+          SELECT AVG(EXTRACT(EPOCH FROM (ended_at - started_at))) as avg_sec
+          FROM work_items wi
+          WHERE status = 'ENDED'
+            AND ended_at IS NOT NULL
+            AND started_at >= ${fromDate}
+            AND started_at <= ${toDate}
+            ${siteCondition}
+        )
+        SELECT COUNT(*) as cnt
+        FROM work_items wi, avg_dur
+        WHERE wi.status = 'ENDED'
+          AND wi.ended_at IS NOT NULL
+          AND wi.started_at >= ${fromDate}
+          AND wi.started_at <= ${toDate}
+          ${siteCondition}
+          AND EXTRACT(EPOCH FROM (wi.ended_at - wi.started_at)) > avg_dur.avg_sec * 2
+      `;
+      const longCount = Number(longItems[0]?.cnt ?? 0);
+      if (longCount > 0) {
+        alerts.push({
+          type: 'LONG_DURATION',
+          severity: 'WARNING',
+          message: `평균 대비 2배 이상 소요된 작업이 ${longCount}건 있습니다`,
+          count: longCount,
+        });
+      }
+    } catch (err) {
+      this.logger.warn('Long duration alert query failed', err);
+    }
+
+    // 2) 24시간 이상 미종료 작업
+    const now = new Date();
+    const threshold24h = new Date(now.getTime() - 24 * 60 * 60 * 1000);
+    const stuckCount = await this.prisma.workItem.count({
+      where: {
+        ...baseFilter,
+        status: 'ACTIVE',
+        startedAt: { lte: threshold24h },
+      },
+    });
+    if (stuckCount > 0) {
+      alerts.push({
+        type: 'STUCK_WORK',
+        severity: 'CRITICAL',
+        message: `24시간 이상 미종료 작업이 ${stuckCount}건 있습니다`,
+        count: stuckCount,
+      });
+    }
+
+    // 3) 당일 VOID 비율 > 10%
+    const [totalToday, voidToday] = await Promise.all([
+      this.prisma.workItem.count({ where: baseFilter }),
+      this.prisma.workItem.count({ where: { ...baseFilter, status: 'VOID' } }),
+    ]);
+    if (totalToday > 0) {
+      const voidRate = (voidToday / totalToday) * 100;
+      if (voidRate > 10) {
+        alerts.push({
+          type: 'HIGH_VOID_RATE',
+          severity: 'WARNING',
+          message: `VOID 비율이 ${voidRate.toFixed(1)}%로 기준(10%)을 초과합니다`,
+          count: voidToday,
+        });
+      }
+    }
+
+    return { period: { from, to }, alerts };
+  }
+
+  // ── 대시보드 목표 ──
+
+  async getGoals(siteId: string) {
+    return this.prisma.dashboardGoal.findMany({
+      where: { siteId },
+      orderBy: { createdAt: 'desc' },
+    });
+  }
+
+  async createGoal(data: {
+    siteId: string;
+    periodType: string;
+    targetCount?: number;
+    targetVolume?: number;
+    targetQuantity?: number;
+  }) {
+    return this.prisma.dashboardGoal.create({
+      data: {
+        siteId: data.siteId,
+        periodType: data.periodType,
+        targetCount: data.targetCount ?? 0,
+        targetVolume: data.targetVolume ?? 0,
+        targetQuantity: data.targetQuantity ?? 0,
+      },
+    });
+  }
 }

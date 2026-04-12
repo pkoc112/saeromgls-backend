@@ -12,6 +12,7 @@ import { AiModule } from './ai/ai.module';
 import { SitesModule } from './sites/sites.module';
 import { BreakConfigsModule } from './break-configs/break-configs.module';
 import { SubscriptionsModule } from './subscriptions/subscriptions.module';
+import { PerformanceModule } from './performance/performance.module';
 
 @Module({
   imports: [
@@ -27,6 +28,7 @@ import { SubscriptionsModule } from './subscriptions/subscriptions.module';
     SitesModule,
     BreakConfigsModule,
     SubscriptionsModule,
+    PerformanceModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })
