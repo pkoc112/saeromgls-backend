@@ -184,4 +184,32 @@ export class WorkersService {
     this.logger.log(`Worker updated: ${worker.employeeCode}`);
     return worker;
   }
+
+  /**
+   * 작업자 영구 삭제
+   * 작업 기록이 있으면 삭제 불가 (비활성화 권장)
+   */
+  async delete(id: string): Promise<void> {
+    const existing = await this.prisma.worker.findUnique({ where: { id } });
+    if (!existing) throw new NotFoundException('작업자를 찾을 수 없습니다');
+
+    const workItemCount = await this.prisma.workItem.count({
+      where: {
+        OR: [
+          { startedByWorkerId: id },
+          { endedByWorkerId: id },
+          { assignments: { some: { workerId: id } } },
+        ],
+      },
+    });
+
+    if (workItemCount > 0) {
+      throw new ConflictException(
+        `작업 기록이 ${workItemCount}건 있어 삭제할 수 없습니다. 비활성화를 사용하세요.`,
+      );
+    }
+
+    await this.prisma.worker.delete({ where: { id } });
+    this.logger.log(`Worker deleted: ${existing.employeeCode}`);
+  }
 }
