@@ -33,6 +33,9 @@ model Site {
   classifications    Classification[]
   incentivePolicies  IncentivePolicy[]
   dashboardGoals     DashboardGoal[]
+  activityLogs       AdminActivityLog[]
+  backupJobs         BackupJob[]
+  restoreRequests    RestoreRequest[]
 
   @@index([parentSiteId])
   @@map("sites")
@@ -95,6 +98,8 @@ model Worker {
   auditLogs        AuditLog[]
   consents         UserConsent[]
   loginHistory     LoginHistory[]
+  activityLogs     AdminActivityLog[]
+  restoreRequests  RestoreRequest[]
 
   @@index([siteId])
   @@map("workers")
@@ -297,4 +302,61 @@ model DashboardGoal {
 
   @@index([siteId])
   @@map("dashboard_goals")
+}
+
+/// 관리자 활동 로그
+model AdminActivityLog {
+  id              String   @id @default(uuid())
+  siteId          String?  @map("site_id")
+  actorWorkerId   String   @map("actor_worker_id")
+  actionType      String   @map("action_type")
+  targetType      String?  @map("target_type")
+  targetId        String?  @map("target_id")
+  metadata        String?
+  ipAddress       String?  @map("ip_address")
+  userAgent       String?  @map("user_agent")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  site            Site?    @relation(fields: [siteId], references: [id])
+  actorWorker     Worker   @relation(fields: [actorWorkerId], references: [id])
+
+  @@index([siteId])
+  @@index([actorWorkerId])
+  @@index([actionType])
+  @@index([createdAt])
+  @@map("admin_activity_logs")
+}
+
+/// 백업 작업
+model BackupJob {
+  id          String    @id @default(uuid())
+  siteId      String?   @map("site_id")
+  type        String    @default("manual")
+  status      String    @default("pending")
+  startedAt   DateTime  @default(now()) @map("started_at")
+  completedAt DateTime? @map("completed_at")
+  metadata    String?
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  site        Site?     @relation(fields: [siteId], references: [id])
+
+  @@index([siteId])
+  @@map("backup_jobs")
+}
+
+/// 복원 요청
+model RestoreRequest {
+  id                  String    @id @default(uuid())
+  siteId              String    @map("site_id")
+  requestedByWorkerId String    @map("requested_by_worker_id")
+  reason              String
+  status              String    @default("requested")
+  createdAt           DateTime  @default(now()) @map("created_at")
+  resolvedAt          DateTime? @map("resolved_at")
+
+  site                Site      @relation(fields: [siteId], references: [id])
+  requestedBy         Worker    @relation(fields: [requestedByWorkerId], references: [id])
+
+  @@index([siteId])
+  @@map("restore_requests")
 }

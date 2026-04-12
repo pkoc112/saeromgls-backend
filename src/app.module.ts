@@ -13,6 +13,9 @@ import { SitesModule } from './sites/sites.module';
 import { BreakConfigsModule } from './break-configs/break-configs.module';
 import { SubscriptionsModule } from './subscriptions/subscriptions.module';
 import { PerformanceModule } from './performance/performance.module';
+import { ReportsModule } from './reports/reports.module';
+import { ActivityLogsModule } from './activity-logs/activity-logs.module';
+import { DataProtectionModule } from './data-protection/data-protection.module';
 
 @Module({
   imports: [
@@ -29,6 +32,9 @@ import { PerformanceModule } from './performance/performance.module';
     BreakConfigsModule,
     SubscriptionsModule,
     PerformanceModule,
+    ReportsModule,
+    ActivityLogsModule,
+    DataProtectionModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })
