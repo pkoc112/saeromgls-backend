@@ -23,7 +23,10 @@ export class WorkersService {
     const limit = params.limit || 20;
     const skip = (page - 1) * limit;
 
-    const where = params.status ? { status: params.status } : {};
+    const where: Record<string, unknown> = {};
+    if (params.status) where.status = params.status;
+    // 관리 역할(MASTER/ADMIN)은 작업자 목록에서 제외
+    where.role = { notIn: ['MASTER', 'ADMIN'] };
 
     const [data, total] = await Promise.all([
       this.prisma.worker.findMany({
