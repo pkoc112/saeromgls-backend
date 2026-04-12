@@ -632,4 +632,19 @@ export class WorkItemsService {
       },
     });
   }
+
+  /**
+   * 관리자: 작업 기록 영구 삭제
+   */
+  async deleteWorkItem(id: string): Promise<void> {
+    const existing = await this.prisma.workItem.findUnique({ where: { id } });
+    if (!existing) throw new NotFoundException('작업을 찾을 수 없습니다');
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.workAssignment.deleteMany({ where: { workItemId: id } });
+      await tx.workItem.delete({ where: { id } });
+    });
+
+    this.logger.log(`WorkItem deleted: ${id}`);
+  }
 }

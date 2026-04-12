@@ -3,11 +3,14 @@ import {
   Get,
   Post,
   Patch,
+  Delete,
   Body,
   Param,
   Query,
   UseGuards,
   ParseUUIDPipe,
+  HttpCode,
+  HttpStatus,
   Req,
 } from '@nestjs/common';
 import {
@@ -241,5 +244,17 @@ export class WorkItemsController {
     const ip = req.ip || req.socket.remoteAddress;
     const userAgent = req.headers['user-agent'];
     return this.workItemsService.forceEnd(id, dto, user.sub, ip, userAgent);
+  }
+
+  @Delete('admin/work-items/:id')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN')
+  @ApiBearerAuth('jwt')
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @ApiTags('Admin Work Items')
+  @ApiOperation({ summary: '작업 기록 삭제 (관리자)' })
+  @ApiParam({ name: 'id', description: '작업 UUID' })
+  deleteWorkItem(@Param('id', ParseUUIDPipe) id: string) {
+    return this.workItemsService.deleteWorkItem(id);
   }
 }
