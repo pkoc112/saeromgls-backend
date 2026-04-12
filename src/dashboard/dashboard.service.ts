@@ -20,6 +20,7 @@ export class DashboardService {
 
     const dateFilter: Prisma.WorkItemWhereInput = {
       startedAt: { gte: fromDate, lte: toDate },
+      ...(siteId && { startedByWorker: { siteId } }),
     };
 
     // 전체 건수 (상태별)
@@ -200,6 +201,7 @@ export class DashboardService {
     const items = await this.prisma.workItem.findMany({
       where: {
         startedAt: { gte: fromDate, lte: toDate },
+        ...(siteId && { startedByWorker: { siteId } }),
       },
       include: {
         classification: { select: { code: true, displayName: true } },
