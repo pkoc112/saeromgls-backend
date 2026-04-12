@@ -53,7 +53,8 @@ export class PerformanceService {
       ? Prisma.sql`AND w.site_id = ${siteId}`
       : Prisma.empty;
 
-    // 작업자별 집계 쿼리
+    // 작업자별 집계 (시작자 + 공동작업자 모두 포함)
+    // UNION으로 시작자와 공동작업자를 합친 후 작업자별 집계
     const rankings = await this.prisma.$queryRaw<
       {
         worker_id: string;
@@ -63,25 +64,38 @@ export class PerformanceService {
         total_volume: number;
         total_quantity: bigint;
         avg_duration_minutes: number | null;
+        co_work_count: bigint;
       }[]
     >`
+      WITH all_participations AS (
+        -- 시작자 (주 작업자)
+        SELECT wi.id as work_item_id, wi.started_by_worker_id as worker_id,
+               wi.volume, wi.quantity, wi.started_at, wi.ended_at, false as is_coworker
+        FROM work_items wi
+        WHERE wi.status = 'ENDED' AND wi.ended_at IS NOT NULL
+          AND wi.started_at >= ${fromDate} AND wi.started_at <= ${toDate}
+          ${siteFilter}
+        UNION ALL
+        -- 공동 작업자
+        SELECT wi.id as work_item_id, wa.worker_id,
+               wi.volume, wi.quantity, wi.started_at, wi.ended_at, true as is_coworker
+        FROM work_items wi
+        JOIN work_assignments wa ON wa.work_item_id = wi.id AND wa.role != 'STARTER'
+        WHERE wi.status = 'ENDED' AND wi.ended_at IS NOT NULL
+          AND wi.started_at >= ${fromDate} AND wi.started_at <= ${toDate}
+          ${siteFilter}
+      )
       SELECT
         w.id as worker_id,
         w.name as worker_name,
         w.employee_code,
-        COUNT(wi.id) as completed_count,
-        COALESCE(SUM(wi.volume), 0) as total_volume,
-        COALESCE(SUM(wi.quantity), 0) as total_quantity,
-        AVG(
-          EXTRACT(EPOCH FROM (wi.ended_at - wi.started_at)) / 60.0
-        ) as avg_duration_minutes
-      FROM work_items wi
-      JOIN workers w ON w.id = wi.started_by_worker_id
-      WHERE wi.status = 'ENDED'
-        AND wi.ended_at IS NOT NULL
-        AND wi.started_at >= ${fromDate}
-        AND wi.started_at <= ${toDate}
-        ${siteFilter}
+        COUNT(DISTINCT ap.work_item_id) as completed_count,
+        COALESCE(SUM(ap.volume), 0) as total_volume,
+        COALESCE(SUM(ap.quantity), 0) as total_quantity,
+        AVG(EXTRACT(EPOCH FROM (ap.ended_at - ap.started_at)) / 60.0) as avg_duration_minutes,
+        COUNT(DISTINCT CASE WHEN ap.is_coworker THEN ap.work_item_id END) as co_work_count
+      FROM all_participations ap
+      JOIN workers w ON w.id = ap.worker_id
       GROUP BY w.id, w.name, w.employee_code
       ORDER BY completed_count DESC
     `;
@@ -128,6 +142,7 @@ export class PerformanceService {
         avgDurationMinutes: avgDuration,
         productivityScore,
         estimatedIncentive,
+        coWorkCount: Number(r.co_work_count || 0),
       };
     });
 
