@@ -146,6 +146,19 @@ export class WorkItemsController {
     return this.workItemsService.resumeWorkItem(id, resumedByWorkerId, ip, userAgent);
   }
 
+  @Delete('mobile/work-items/:id')
+  @ApiTags('Mobile Work Items')
+  @ApiOperation({ summary: '작업 무효화 (모바일)' })
+  @ApiParam({ name: 'id', description: '작업 UUID' })
+  deleteWorkItemMobile(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Req() req: Request,
+  ) {
+    const ip = req.ip || req.socket.remoteAddress;
+    const userAgent = req.headers['user-agent'];
+    return this.workItemsService.voidWorkItemMobile(id, ip, userAgent);
+  }
+
   // ===================== Admin Endpoints =====================
 
   @Get('admin/work-items')
