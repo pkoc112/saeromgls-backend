@@ -5,6 +5,7 @@ import {
   Body,
   UseGuards,
   BadRequestException,
+  ForbiddenException,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -22,6 +23,11 @@ import {
   JwtPayload,
 } from '../common/decorators/current-user.decorator';
 import { StartTrialDto } from './dto/create-subscription.dto';
+import {
+  ChangePlanDto,
+  SiteIdDto,
+  GrantTrialDto,
+} from './dto/admin-subscription.dto';
 
 @Controller('admin')
 @ApiTags('Subscriptions')
@@ -141,5 +147,111 @@ export class SubscriptionsController {
       throw new BadRequestException('소속 사업장이 없습니다');
     }
     return this.subscriptionsService.getFeatureAccess(user.siteId);
+  }
+
+  // ══════════════════════════════════════════════
+  // MASTER 전용 구독 관리 엔드포인트
+  // ══════════════════════════════════════════════
+
+  /** MASTER 역할 검증 헬퍼 */
+  private ensureMaster(user: JwtPayload) {
+    if (user.role !== 'MASTER') {
+      throw new ForbiddenException('MASTER 권한이 필요합니다');
+    }
+  }
+
+  // ──────────────────────────────────────────────
+  // GET /api/admin/subscriptions/all — 전체 사업장 구독 현황 (MASTER)
+  // ──────────────────────────────────────────────
+  @Get('subscriptions/all')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN')
+  @ApiBearerAuth('jwt')
+  @ApiOperation({
+    summary: '전체 사업장 구독 현황 목록',
+    description: 'MASTER: 모든 사업장의 구독 현황을 조회합니다.',
+  })
+  @ApiResponse({ status: 200, description: '전체 구독 현황 목록' })
+  getAllSubscriptions(@CurrentUser() user: JwtPayload) {
+    this.ensureMaster(user);
+    return this.subscriptionsService.getAllSubscriptions();
+  }
+
+  // ──────────────────────────────────────────────
+  // POST /api/admin/subscriptions/change-plan — 사업장 플랜 변경 (MASTER)
+  // ──────────────────────────────────────────────
+  @Post('subscriptions/change-plan')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN')
+  @ApiBearerAuth('jwt')
+  @ApiOperation({
+    summary: '사업장 플랜 변경',
+    description: 'MASTER: 사업장의 구독 플랜을 변경합니다.',
+  })
+  @ApiResponse({ status: 201, description: '플랜 변경 성공' })
+  @ApiResponse({ status: 403, description: 'MASTER 권한 필요' })
+  changePlan(@CurrentUser() user: JwtPayload, @Body() dto: ChangePlanDto) {
+    this.ensureMaster(user);
+    return this.subscriptionsService.changePlan(dto.siteId, dto.planCode);
+  }
+
+  // ──────────────────────────────────────────────
+  // POST /api/admin/subscriptions/activate — 구독 활성화 (MASTER)
+  // ──────────────────────────────────────────────
+  @Post('subscriptions/activate')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN')
+  @ApiBearerAuth('jwt')
+  @ApiOperation({
+    summary: '구독 활성화',
+    description: 'MASTER: 입금 확인 후 사업장 구독을 활성화합니다.',
+  })
+  @ApiResponse({ status: 201, description: '활성화 성공' })
+  @ApiResponse({ status: 403, description: 'MASTER 권한 필요' })
+  activateSubscription(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: SiteIdDto,
+  ) {
+    this.ensureMaster(user);
+    return this.subscriptionsService.activateSubscription(dto.siteId);
+  }
+
+  // ──────────────────────────────────────────────
+  // POST /api/admin/subscriptions/cancel — 구독 해지 (MASTER)
+  // ──────────────────────────────────────────────
+  @Post('subscriptions/cancel')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN')
+  @ApiBearerAuth('jwt')
+  @ApiOperation({
+    summary: '구독 해지',
+    description: 'MASTER: 사업장의 구독을 해지합니다.',
+  })
+  @ApiResponse({ status: 201, description: '해지 성공' })
+  @ApiResponse({ status: 403, description: 'MASTER 권한 필요' })
+  cancelSubscription(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: SiteIdDto,
+  ) {
+    this.ensureMaster(user);
+    return this.subscriptionsService.cancelSubscription(dto.siteId);
+  }
+
+  // ──────────────────────────────────────────────
+  // POST /api/admin/subscriptions/grant-trial — 무료 체험 부여 (MASTER)
+  // ──────────────────────────────────────────────
+  @Post('subscriptions/grant-trial')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN')
+  @ApiBearerAuth('jwt')
+  @ApiOperation({
+    summary: '무료 체험 부여',
+    description: 'MASTER: 사업장에 무료 체험 기간을 부여합니다.',
+  })
+  @ApiResponse({ status: 201, description: '체험 부여 성공' })
+  @ApiResponse({ status: 403, description: 'MASTER 권한 필요' })
+  grantTrial(@CurrentUser() user: JwtPayload, @Body() dto: GrantTrialDto) {
+    this.ensureMaster(user);
+    return this.subscriptionsService.grantTrial(dto.siteId, dto.days);
   }
 }

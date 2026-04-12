@@ -186,6 +186,215 @@ export class SubscriptionsService {
   }
 
   // ──────────────────────────────────────────────
+  // [MASTER] 전체 사업장 구독 현황 목록
+  // ──────────────────────────────────────────────
+  async getAllSubscriptions() {
+    const sites = await this.prisma.site.findMany({
+      where: { isActive: true },
+      orderBy: { name: 'asc' },
+    });
+
+    const results = [];
+    for (const site of sites) {
+      const sub = await this.prisma.subscription.findFirst({
+        where: { siteId: site.id },
+        orderBy: { createdAt: 'desc' },
+        include: { plan: true },
+      });
+
+      const workerCount = await this.prisma.worker.count({
+        where: {
+          siteId: site.id,
+          status: 'ACTIVE',
+          role: { notIn: ['MASTER', 'ADMIN'] },
+        },
+      });
+
+      results.push({
+        siteId: site.id,
+        siteName: site.name,
+        siteCode: site.code,
+        planName: sub?.plan?.name || 'Free',
+        planCode: sub?.plan?.code || 'FREE',
+        status: sub?.status || 'FREE',
+        trialEndsAt: sub?.trialEndsAt || null,
+        currentPeriodEnd: sub?.currentPeriodEnd || null,
+        workerCount,
+      });
+    }
+
+    return results;
+  }
+
+  // ──────────────────────────────────────────────
+  // [MASTER] 사업장 플랜 변경
+  // ──────────────────────────────────────────────
+  async changePlan(siteId: string, planCode: string) {
+    const site = await this.prisma.site.findUnique({ where: { id: siteId } });
+    if (!site) {
+      throw new NotFoundException('사업장을 찾을 수 없습니다');
+    }
+
+    // FREE로 변경: 기존 구독 삭제
+    if (planCode === 'FREE') {
+      await this.prisma.subscription.deleteMany({ where: { siteId } });
+      return { message: `${site.name} 사업장이 Free 플랜으로 변경되었습니다` };
+    }
+
+    // BASIC/PRO로 변경
+    const plan = await this.prisma.plan.findUnique({ where: { code: planCode } });
+    if (!plan) {
+      throw new NotFoundException(`플랜을 찾을 수 없습니다: ${planCode}`);
+    }
+
+    const now = new Date();
+    const periodEnd = new Date(now);
+    periodEnd.setDate(periodEnd.getDate() + 30);
+
+    // 기존 구독이 있으면 업데이트, 없으면 생성
+    const existing = await this.prisma.subscription.findFirst({
+      where: { siteId },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (existing) {
+      await this.prisma.subscription.update({
+        where: { id: existing.id },
+        data: {
+          planId: plan.id,
+          status: 'ACTIVE',
+          currentPeriodStart: now,
+          currentPeriodEnd: periodEnd,
+          trialEndsAt: null,
+        },
+      });
+    } else {
+      await this.prisma.subscription.create({
+        data: {
+          siteId,
+          planId: plan.id,
+          status: 'ACTIVE',
+          billingCycle: 'MONTHLY',
+          currentPeriodStart: now,
+          currentPeriodEnd: periodEnd,
+        },
+      });
+    }
+
+    return { message: `${site.name} 사업장이 ${plan.name} 플랜으로 변경되었습니다` };
+  }
+
+  // ──────────────────────────────────────────────
+  // [MASTER] 구독 활성화 (입금 확인 후)
+  // ──────────────────────────────────────────────
+  async activateSubscription(siteId: string) {
+    const subscription = await this.prisma.subscription.findFirst({
+      where: { siteId },
+      orderBy: { createdAt: 'desc' },
+      include: { plan: true },
+    });
+
+    if (!subscription) {
+      throw new NotFoundException('해당 사업장의 구독을 찾을 수 없습니다');
+    }
+
+    if (subscription.status === 'ACTIVE') {
+      throw new BadRequestException('이미 활성 상태입니다');
+    }
+
+    const now = new Date();
+    const periodEnd = new Date(now);
+    periodEnd.setDate(periodEnd.getDate() + 30);
+
+    await this.prisma.subscription.update({
+      where: { id: subscription.id },
+      data: {
+        status: 'ACTIVE',
+        currentPeriodStart: now,
+        currentPeriodEnd: periodEnd,
+      },
+    });
+
+    return { message: `${subscription.plan.name} 구독이 활성화되었습니다` };
+  }
+
+  // ──────────────────────────────────────────────
+  // [MASTER] 구독 해지
+  // ──────────────────────────────────────────────
+  async cancelSubscription(siteId: string) {
+    const subscription = await this.prisma.subscription.findFirst({
+      where: { siteId },
+      orderBy: { createdAt: 'desc' },
+      include: { plan: true },
+    });
+
+    if (!subscription) {
+      throw new NotFoundException('해당 사업장의 구독을 찾을 수 없습니다');
+    }
+
+    if (subscription.status === 'CANCELED') {
+      throw new BadRequestException('이미 해지된 구독입니다');
+    }
+
+    await this.prisma.subscription.update({
+      where: { id: subscription.id },
+      data: { status: 'CANCELED' },
+    });
+
+    return { message: `${subscription.plan.name} 구독이 해지되었습니다` };
+  }
+
+  // ──────────────────────────────────────────────
+  // [MASTER] 무료 체험 부여
+  // ──────────────────────────────────────────────
+  async grantTrial(siteId: string, days: number = 14) {
+    const site = await this.prisma.site.findUnique({ where: { id: siteId } });
+    if (!site) {
+      throw new NotFoundException('사업장을 찾을 수 없습니다');
+    }
+
+    // 이미 활성 구독/체험이 있으면 에러
+    const existing = await this.prisma.subscription.findFirst({
+      where: { siteId, status: { in: ['ACTIVE', 'TRIAL'] } },
+    });
+    if (existing) {
+      throw new BadRequestException('이미 활성화된 구독 또는 체험이 있습니다');
+    }
+
+    // BASIC 플랜으로 체험 부여
+    const plan = await this.prisma.plan.findUnique({ where: { code: 'BASIC' } });
+    if (!plan) {
+      throw new NotFoundException('BASIC 플랜을 찾을 수 없습니다');
+    }
+
+    const now = new Date();
+    const trialEnd = new Date(now);
+    trialEnd.setDate(trialEnd.getDate() + days);
+
+    // 기존 만료/해지 구독 삭제 후 새로 생성
+    await this.prisma.subscription.deleteMany({
+      where: { siteId, status: { in: ['EXPIRED', 'CANCELED', 'SUSPENDED'] } },
+    });
+
+    await this.prisma.subscription.create({
+      data: {
+        siteId,
+        planId: plan.id,
+        status: 'TRIAL',
+        billingCycle: 'MONTHLY',
+        trialEndsAt: trialEnd,
+        currentPeriodStart: now,
+        currentPeriodEnd: trialEnd,
+      },
+    });
+
+    return {
+      message: `${site.name} 사업장에 ${days}일 무료 체험이 부여되었습니다`,
+      trialEndsAt: trialEnd,
+    };
+  }
+
+  // ──────────────────────────────────────────────
   // 14일 무료 체험 시작
   // ──────────────────────────────────────────────
   async startTrial(siteId: string, planCode: string = 'BASIC') {
