@@ -4,11 +4,14 @@ import { ReportsService } from './reports.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
+import { EntitlementGuard } from '../common/guards/entitlement.guard';
+import { Feature } from '../common/decorators/feature.decorator';
 import { CurrentUser, JwtPayload } from '../common/decorators/current-user.decorator';
 import { resolveSiteId } from '../common/utils/site-scope';
 
 @Controller('admin/reports')
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, EntitlementGuard)
+@Feature('REPORTS')
 @Roles('ADMIN', 'SUPERVISOR')
 @ApiBearerAuth('jwt')
 @ApiTags('Admin Reports')

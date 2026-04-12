@@ -11,6 +11,8 @@ import { AiService } from './ai.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
+import { EntitlementGuard } from '../common/guards/entitlement.guard';
+import { Feature } from '../common/decorators/feature.decorator';
 import { IsDateString, IsNotEmpty } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 
@@ -36,7 +38,8 @@ class AiAnalysisRequestDto {
 }
 
 @Controller('admin/ai')
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, EntitlementGuard)
+@Feature('AI_INSIGHT')
 @Roles('ADMIN', 'SUPERVISOR')
 @ApiBearerAuth('jwt')
 @ApiTags('Admin AI')

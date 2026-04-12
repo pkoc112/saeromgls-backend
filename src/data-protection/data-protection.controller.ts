@@ -12,11 +12,14 @@ import { DataProtectionService } from './data-protection.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
+import { EntitlementGuard } from '../common/guards/entitlement.guard';
+import { Feature } from '../common/decorators/feature.decorator';
 import { CurrentUser, JwtPayload } from '../common/decorators/current-user.decorator';
 import { resolveSiteId } from '../common/utils/site-scope';
 
 @Controller('admin')
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, EntitlementGuard)
+@Feature('DATA_PROTECTION')
 @Roles('ADMIN')
 @ApiBearerAuth('jwt')
 @ApiTags('Admin Data Protection')

@@ -48,6 +48,11 @@ export class EntitlementGuard implements CanActivate {
       throw new ForbiddenException('인증 정보가 없습니다');
     }
 
+    // MASTER는 모든 기능 접근 가능
+    if (user.role === 'MASTER') {
+      return true;
+    }
+
     if (!user.siteId) {
       throw new ForbiddenException('소속 사업장이 없습니다');
     }
@@ -60,8 +65,13 @@ export class EntitlementGuard implements CanActivate {
     });
 
     if (!subscription) {
+      // 구독 없으면 Free 플랜 기본 기능만 허용
+      const freePlan = await this.prisma.plan.findUnique({ where: { code: 'FREE' } });
+      if (freePlan && freePlan.features.includes(requiredFeature)) {
+        return true;
+      }
       throw new ForbiddenException(
-        '플랜 업그레이드가 필요합니다',
+        '이 기능은 유료 플랜에서만 사용할 수 있습니다. 플랜 업그레이드가 필요합니다.',
       );
     }
 
