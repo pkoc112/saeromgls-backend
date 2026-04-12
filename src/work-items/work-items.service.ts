@@ -361,12 +361,17 @@ export class WorkItemsService {
   /**
    * 관리자: 작업 목록 조회 (페이지네이션, 필터)
    */
-  async findAllForAdmin(query: QueryWorkItemsDto) {
+  async findAllForAdmin(query: QueryWorkItemsDto, siteId?: string) {
     const page = query.page || 1;
     const limit = query.limit || 20;
     const skip = (page - 1) * limit;
 
     const where: Prisma.WorkItemWhereInput = {};
+
+    // ★ siteId 격리: 해당 사업장 작업자의 작업만 조회
+    if (siteId) {
+      where.startedByWorker = { siteId };
+    }
 
     if (query.status) {
       where.status = query.status;

@@ -36,6 +36,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { CurrentUser, JwtPayload } from '../common/decorators/current-user.decorator';
+import { resolveSiteId } from '../common/utils/site-scope';
 
 @Controller()
 export class WorkItemsController {
@@ -177,8 +178,13 @@ export class WorkItemsController {
     description: '페이지네이션, 상태/분류/작업자/날짜 범위 필터 지원.',
   })
   @ApiResponse({ status: 200, description: '작업 목록 + 페이지네이션 메타' })
-  findAllForAdmin(@Query() query: QueryWorkItemsDto) {
-    return this.workItemsService.findAllForAdmin(query);
+  findAllForAdmin(
+    @Query() query: QueryWorkItemsDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    // siteId 격리: ADMIN은 자기 사업장만, MASTER는 전체 또는 지정
+    const siteId = resolveSiteId(user, query.siteId);
+    return this.workItemsService.findAllForAdmin(query, siteId);
   }
 
   @Get('admin/work-items/:id')

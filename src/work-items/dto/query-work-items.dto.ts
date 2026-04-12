@@ -68,4 +68,12 @@ export class QueryWorkItemsDto {
   @IsDateString()
   @IsOptional()
   to?: string;
+
+  @ApiProperty({
+    description: '사업장 ID 필터 (MASTER만 지정 가능, 그 외 자동)',
+    required: false,
+  })
+  @IsString()
+  @IsOptional()
+  siteId?: string;
 }

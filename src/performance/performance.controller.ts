@@ -73,13 +73,13 @@ export class PerformanceController {
 
   @Get('/incentive-policies')
   @ApiOperation({ summary: '인센티브 정책 조회' })
-  @ApiQuery({ name: 'siteId', required: true, type: String })
+  @ApiQuery({ name: 'siteId', required: false, type: String })
   getIncentivePolicies(
-    @Query('siteId') querySiteId: string,
+    @Query('siteId') querySiteId?: string,
     @CurrentUser() user?: JwtPayload,
   ) {
     const siteId = resolveSiteId(user, querySiteId);
-    if (!siteId) throw new BadRequestException('siteId가 필요합니다');
+    if (!siteId) return []; // siteId 없으면 빈 배열 반환 (MASTER가 전체 조회 시)
     return this.performanceService.getIncentivePolicies(siteId);
   }
 
