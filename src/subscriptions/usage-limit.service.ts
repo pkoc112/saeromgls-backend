@@ -40,20 +40,27 @@ export class UsageLimitService {
       this.getSiteUsage(siteId),
     ]);
 
+    // 구독 없으면 Free 플랜 기본값 사용
+    let maxWorkers = workerUsage.plan?.maxWorkers ?? 0;
+    let maxSites = siteUsage.plan?.maxSites ?? 1;
+    if (!workerUsage.plan || !siteUsage.plan) {
+      const freePlan = await this.prisma.plan.findUnique({ where: { code: 'FREE' } });
+      if (freePlan) {
+        if (!workerUsage.plan) maxWorkers = freePlan.maxWorkers;
+        if (!siteUsage.plan) maxSites = freePlan.maxSites;
+      }
+    }
+
     return {
       workers: {
         current: workerUsage.currentWorkers,
-        max: workerUsage.plan?.maxWorkers ?? 0,
-        canAdd: workerUsage.plan
-          ? workerUsage.currentWorkers < workerUsage.plan.maxWorkers
-          : true,
+        max: maxWorkers,
+        canAdd: maxWorkers > 0 ? workerUsage.currentWorkers < maxWorkers : true,
       },
       sites: {
         current: siteUsage.currentSites,
-        max: siteUsage.plan?.maxSites ?? 1,
-        canAdd: siteUsage.plan
-          ? siteUsage.currentSites < siteUsage.plan.maxSites
-          : true,
+        max: maxSites,
+        canAdd: maxSites > 0 ? siteUsage.currentSites < maxSites : true,
       },
     };
   }
