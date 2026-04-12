@@ -30,15 +30,14 @@ export class ReportsService {
       siteId: siteId || 'ALL',
     };
 
-    // 2) KPI 요약 — dashboard getStats 재사용
-    const stats = await this.dashboardService.getStats(from, to, siteId);
-
-    // 3) 트렌드 — groupBy는 type에 따라 결정
+    // 2) KPI 요약, 트렌드, 전기 대비 증감, 알림 — 병렬 조회
     const groupBy = type === 'daily' ? 'hour' : type === 'weekly' ? 'day' : 'week';
-    const trends = await this.dashboardService.getTrends(from, to, groupBy, siteId);
-
-    // 4) 전기 대비 증감
-    const comparison = await this.dashboardService.getComparison(from, to, siteId);
+    const [stats, trends, comparison, alertsData] = await Promise.all([
+      this.dashboardService.getStats(from, to, siteId),
+      this.dashboardService.getTrends(from, to, groupBy, siteId),
+      this.dashboardService.getComparison(from, to, siteId),
+      this.dashboardService.getAlerts(from, to, siteId),
+    ]);
 
     // 5) 분류별 실적 (stats에서 추출)
     const classificationPerformance = stats.byClassification;
@@ -47,7 +46,6 @@ export class ReportsService {
     const topWorkers = (stats.topWorkers || []).slice(0, 5);
 
     // 7) 특이사항 — 알림 기반
-    const alertsData = await this.dashboardService.getAlerts(from, to, siteId);
     const anomalies = alertsData.alerts || [];
 
     // 8) AI 요약 (선택적)

@@ -5,6 +5,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { CurrentUser, JwtPayload } from '../common/decorators/current-user.decorator';
+import { resolveSiteId } from '../common/utils/site-scope';
 
 @Controller('admin/activity-logs')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -41,8 +42,7 @@ export class ActivityLogsController {
       throw new BadRequestException('올바른 to 날짜 형식이 아닙니다');
     }
 
-    // MASTER는 querySiteId 사용, 나머지는 JWT siteId 강제
-    const siteId = user?.role === 'MASTER' ? (querySiteId || undefined) : user?.siteId;
+    const siteId = resolveSiteId(user, querySiteId);
 
     return this.activityLogsService.getActivityLogs(siteId, {
       from,

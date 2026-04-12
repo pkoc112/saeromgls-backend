@@ -23,12 +23,16 @@ export class DashboardService {
       ...(siteId && { startedByWorker: { siteId } }),
     };
 
-    // 전체 건수 (상태별)
-    const [totalActive, totalEnded, totalVoid] = await Promise.all([
-      this.prisma.workItem.count({ where: { ...dateFilter, status: 'ACTIVE' } }),
-      this.prisma.workItem.count({ where: { ...dateFilter, status: 'ENDED' } }),
-      this.prisma.workItem.count({ where: { ...dateFilter, status: 'VOID' } }),
-    ]);
+    // 전체 건수 (상태별) — groupBy 1회 쿼리로 집계
+    const statusCounts = await this.prisma.workItem.groupBy({
+      by: ['status'],
+      where: dateFilter,
+      _count: true,
+    });
+    const countMap = Object.fromEntries(statusCounts.map(s => [s.status, s._count]));
+    const totalActive = countMap['ACTIVE'] || 0;
+    const totalEnded = countMap['ENDED'] || 0;
+    const totalVoid = countMap['VOID'] || 0;
 
     // 총 물량/수량 (종료된 작업 기준)
     const aggregates = await this.prisma.workItem.aggregate({

@@ -5,6 +5,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { CurrentUser, JwtPayload } from '../common/decorators/current-user.decorator';
+import { resolveSiteId } from '../common/utils/site-scope';
 
 @Controller('admin/reports')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -41,8 +42,7 @@ export class ReportsController {
       throw new BadRequestException('시작 날짜가 종료 날짜보다 늦을 수 없습니다');
     }
 
-    // MASTER는 querySiteId 사용, 나머지는 JWT siteId 강제
-    const siteId = user?.role === 'MASTER' ? (querySiteId || undefined) : user?.siteId;
+    const siteId = resolveSiteId(user, querySiteId);
 
     const aiFlag = includeAi === 'true' || includeAi === '1';
 

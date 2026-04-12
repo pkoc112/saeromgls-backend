@@ -13,6 +13,7 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { CurrentUser, JwtPayload } from '../common/decorators/current-user.decorator';
+import { resolveSiteId } from '../common/utils/site-scope';
 
 @Controller('admin')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -31,7 +32,7 @@ export class DataProtectionController {
     @Query('siteId') querySiteId?: string,
     @CurrentUser() user?: JwtPayload,
   ) {
-    const siteId = user?.role === 'MASTER' ? (querySiteId || undefined) : user?.siteId;
+    const siteId = resolveSiteId(user, querySiteId);
     return this.dataProtectionService.getBackupStatus(siteId);
   }
 
@@ -41,7 +42,7 @@ export class DataProtectionController {
     @Body() body: { siteId?: string; type?: string },
     @CurrentUser() user?: JwtPayload,
   ) {
-    const siteId = user?.role === 'MASTER' ? (body.siteId || undefined) : user?.siteId;
+    const siteId = resolveSiteId(user, body.siteId);
     return this.dataProtectionService.requestBackup(siteId, body.type || 'manual');
   }
 
@@ -60,7 +61,7 @@ export class DataProtectionController {
     @Query('limit') limit?: string,
     @CurrentUser() user?: JwtPayload,
   ) {
-    const siteId = user?.role === 'MASTER' ? (querySiteId || undefined) : user?.siteId;
+    const siteId = resolveSiteId(user, querySiteId);
     return this.dataProtectionService.getRestoreRequests(siteId, {
       status,
       page: page ? parseInt(page, 10) : undefined,
@@ -78,7 +79,7 @@ export class DataProtectionController {
       throw new BadRequestException('복원 사유(reason)가 필요합니다');
     }
 
-    const siteId = user?.role === 'MASTER' ? body.siteId : user?.siteId;
+    const siteId = resolveSiteId(user, body.siteId);
     if (!siteId) {
       throw new BadRequestException('siteId가 필요합니다');
     }
