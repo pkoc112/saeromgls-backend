@@ -1,5 +1,6 @@
-import { Controller, Post, Get, Patch, Body, Param, HttpCode, HttpStatus, UseGuards } from '@nestjs/common';
+import { Controller, Post, Get, Patch, Body, Param, HttpCode, HttpStatus, UseGuards, Req } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiBody, ApiBearerAuth } from '@nestjs/swagger';
+import { Request } from 'express';
 // Throttle removed - ThrottlerModule not registered in AppModule
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
@@ -23,8 +24,10 @@ export class AuthController {
   @ApiBody({ type: LoginDto })
   @ApiResponse({ status: 200, description: 'JWT 토큰 반환' })
   @ApiResponse({ status: 401, description: '인증 실패' })
-  async adminLogin(@Body() dto: LoginDto) {
-    return this.authService.validateAdmin(dto.employeeCode, dto.pin);
+  async adminLogin(@Body() dto: LoginDto, @Req() req: Request) {
+    const ip = req.ip || req.headers['x-forwarded-for']?.toString();
+    const ua = req.headers['user-agent'];
+    return this.authService.validateAdmin(dto.employeeCode, dto.pin, ip, ua);
   }
 
   /**
@@ -38,8 +41,10 @@ export class AuthController {
   @ApiBody({ type: PinLoginDto })
   @ApiResponse({ status: 200, description: 'JWT 토큰 + 작업자 정보 반환' })
   @ApiResponse({ status: 401, description: '인증 실패' })
-  async pinLogin(@Body() dto: PinLoginDto) {
-    return this.authService.validatePin(dto.workerId, dto.pin);
+  async pinLogin(@Body() dto: PinLoginDto, @Req() req: Request) {
+    const ip = req.ip || req.headers['x-forwarded-for']?.toString();
+    const ua = req.headers['user-agent'];
+    return this.authService.validatePin(dto.workerId, dto.pin, ip, ua);
   }
 
   /**
@@ -77,8 +82,10 @@ export class AuthController {
   @ApiTags('Auth')
   @ApiOperation({ summary: '이메일 로그인' })
   @ApiResponse({ status: 200, description: 'JWT 토큰 + 사용자 정보 반환' })
-  async emailLogin(@Body() dto: { email: string; password: string }) {
-    const worker = await this.authService.validateEmailPassword(dto.email, dto.password);
+  async emailLogin(@Body() dto: { email: string; password: string }, @Req() req: Request) {
+    const ip = req.ip || req.headers['x-forwarded-for']?.toString();
+    const ua = req.headers['user-agent'];
+    const worker = await this.authService.validateEmailPassword(dto.email, dto.password, ip, ua);
     const token = this.authService.generateToken(worker.id, worker.role, worker.employeeCode, worker.siteId ?? undefined);
     return {
       access_token: token.accessToken,

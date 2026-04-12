@@ -13,6 +13,7 @@ import {
   ApiBearerAuth,
 } from '@nestjs/swagger';
 import { SubscriptionsService } from './subscriptions.service';
+import { UsageLimitService } from './usage-limit.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
@@ -25,7 +26,10 @@ import { StartTrialDto } from './dto/create-subscription.dto';
 @Controller('admin')
 @ApiTags('Subscriptions')
 export class SubscriptionsController {
-  constructor(private readonly subscriptionsService: SubscriptionsService) {}
+  constructor(
+    private readonly subscriptionsService: SubscriptionsService,
+    private readonly usageLimitService: UsageLimitService,
+  ) {}
 
   // ──────────────────────────────────────────────
   // GET /api/admin/plans — 플랜 목록 (공개)
@@ -77,5 +81,65 @@ export class SubscriptionsController {
   @ApiResponse({ status: 403, description: '이미 체험 사용 완료' })
   startTrial(@Body() dto: StartTrialDto) {
     return this.subscriptionsService.startTrial(dto.siteId, dto.planCode);
+  }
+
+  // ──────────────────────────────────────────────
+  // GET /api/admin/billing/current-plan — 현재 플랜 + 구독 상태
+  // ──────────────────────────────────────────────
+  @Get('billing/current-plan')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('MASTER', 'ADMIN')
+  @ApiBearerAuth('jwt')
+  @ApiOperation({
+    summary: '현재 플랜 및 구독 상태 조회',
+    description:
+      '로그인한 사용자의 소속 사업장 현재 플랜과 구독 상태를 조회합니다.',
+  })
+  @ApiResponse({ status: 200, description: '현재 플랜 + 구독 상태' })
+  getCurrentPlan(@CurrentUser() user: JwtPayload) {
+    if (!user.siteId) {
+      throw new BadRequestException('소속 사업장이 없습니다');
+    }
+    return this.subscriptionsService.getCurrentPlan(user.siteId);
+  }
+
+  // ──────────────────────────────────────────────
+  // GET /api/admin/billing/usage — 사용량 vs 상한
+  // ──────────────────────────────────────────────
+  @Get('billing/usage')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('MASTER', 'ADMIN')
+  @ApiBearerAuth('jwt')
+  @ApiOperation({
+    summary: '사용량 조회',
+    description:
+      '작업자 수, 사업장 수 등 현재 사용량과 플랜별 상한을 조회합니다.',
+  })
+  @ApiResponse({ status: 200, description: '사용량 vs 상한' })
+  getUsage(@CurrentUser() user: JwtPayload) {
+    if (!user.siteId) {
+      throw new BadRequestException('소속 사업장이 없습니다');
+    }
+    return this.usageLimitService.getUsage(user.siteId);
+  }
+
+  // ──────────────────────────────────────────────
+  // GET /api/admin/billing/feature-access — 접근 가능한 기능 목록
+  // ──────────────────────────────────────────────
+  @Get('billing/feature-access')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('MASTER', 'ADMIN')
+  @ApiBearerAuth('jwt')
+  @ApiOperation({
+    summary: '접근 가능한 기능 목록 조회',
+    description:
+      '현재 구독 플랜에서 사용할 수 있는 기능 목록을 조회합니다.',
+  })
+  @ApiResponse({ status: 200, description: '기능 목록' })
+  getFeatureAccess(@CurrentUser() user: JwtPayload) {
+    if (!user.siteId) {
+      throw new BadRequestException('소속 사업장이 없습니다');
+    }
+    return this.subscriptionsService.getFeatureAccess(user.siteId);
   }
 }

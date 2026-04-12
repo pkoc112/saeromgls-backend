@@ -24,12 +24,13 @@ model Site {
   createdAt    DateTime @default(now()) @map("created_at")
   updatedAt    DateTime @updatedAt @map("updated_at")
 
-  parentSite    Site?              @relation("SiteHierarchy", fields: [parentSiteId], references: [id])
-  childSites    Site[]             @relation("SiteHierarchy")
-  workers       Worker[]
-  breakConfigs  BreakConfig[]
-  insights      DashboardInsight[]
-  subscriptions Subscription[]
+  parentSite      Site?              @relation("SiteHierarchy", fields: [parentSiteId], references: [id])
+  childSites      Site[]             @relation("SiteHierarchy")
+  workers         Worker[]
+  breakConfigs    BreakConfig[]
+  insights        DashboardInsight[]
+  subscriptions   Subscription[]
+  classifications Classification[]
 
   @@index([parentSiteId])
   @@map("sites")
@@ -91,6 +92,7 @@ model Worker {
   assignments      WorkAssignment[]
   auditLogs        AuditLog[]
   consents         UserConsent[]
+  loginHistory     LoginHistory[]
 
   @@index([siteId])
   @@map("workers")
@@ -103,10 +105,13 @@ model Classification {
   displayName String   @map("display_name")
   sortOrder   Int      @default(0) @map("sort_order")
   isActive    Boolean  @default(true) @map("is_active")
+  siteId      String?  @map("site_id")
   createdAt   DateTime @default(now()) @map("created_at")
 
+  site      Site?      @relation(fields: [siteId], references: [id])
   workItems WorkItem[]
 
+  @@index([siteId])
   @@map("classifications")
 }
 
@@ -236,4 +241,20 @@ model Subscription {
   @@index([siteId])
   @@index([status])
   @@map("subscriptions")
+}
+
+/// 로그인 이력
+model LoginHistory {
+  id        String   @id @default(uuid())
+  workerId  String   @map("worker_id")
+  success   Boolean
+  ipAddress String?  @map("ip_address")
+  userAgent String?  @map("user_agent")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  worker Worker @relation(fields: [workerId], references: [id])
+
+  @@index([workerId])
+  @@index([createdAt])
+  @@map("login_history")
 }

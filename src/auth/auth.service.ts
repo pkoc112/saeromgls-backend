@@ -15,6 +15,11 @@ import { RegisterDto } from './dto/register.dto';
 export class AuthService {
   private readonly logger = new Logger(AuthService.name);
 
+  /** 로그인 실패 시 잠금 기준 */
+  private readonly MAX_FAILED_ATTEMPTS = 5;
+  /** 잠금 지속 시간 (밀리초, 30분) */
+  private readonly LOCKOUT_DURATION_MS = 30 * 60 * 1000;
+
   /** 메모리 기반 이메일 인증 코드 저장소 (email -> { code, expiresAt }) */
   private verificationCodes = new Map<
     string,
@@ -110,7 +115,12 @@ export class AuthService {
   // ──────────────────────────────────────────────
   // 이메일/비밀번호 로그인 검증
   // ──────────────────────────────────────────────
-  async validateEmailPassword(email: string, password: string) {
+  async validateEmailPassword(
+    email: string,
+    password: string,
+    ipAddress?: string,
+    userAgent?: string,
+  ) {
     const worker = await this.prisma.worker.findUnique({
       where: { email },
       select: {
@@ -131,17 +141,29 @@ export class AuthService {
       );
     }
 
+    // 계정 잠금 확인
+    const isLocked = await this.checkAccountLocked(worker.id);
+    if (isLocked) {
+      throw new UnauthorizedException(
+        '로그인 시도가 너무 많습니다. 30분 후에 다시 시도해 주세요.',
+      );
+    }
+
     if (worker.status !== 'ACTIVE') {
+      await this.recordLoginHistory(worker.id, false, ipAddress, userAgent);
       throw new UnauthorizedException('비활성화된 계정입니다');
     }
 
     const isValid = await bcrypt.compare(password, worker.passwordHash);
     if (!isValid) {
+      await this.recordLoginHistory(worker.id, false, ipAddress, userAgent);
       throw new UnauthorizedException(
         '이메일 또는 비밀번호가 올바르지 않습니다',
       );
     }
 
+    // 성공 기록
+    await this.recordLoginHistory(worker.id, true, ipAddress, userAgent);
     this.logger.log(`Email login: ${email} (${worker.role})`);
     return worker;
   }
@@ -437,7 +459,12 @@ export class AuthService {
   // 관리자 로그인: 사번 + PIN 검증
   // MASTER, ADMIN, SUPERVISOR 역할 허용
   // ──────────────────────────────────────────────
-  async validateAdmin(employeeCode: string, pin: string) {
+  async validateAdmin(
+    employeeCode: string,
+    pin: string,
+    ipAddress?: string,
+    userAgent?: string,
+  ) {
     const worker = await this.prisma.worker.findUnique({
       where: { employeeCode },
       select: {
@@ -455,12 +482,22 @@ export class AuthService {
       throw new UnauthorizedException('사번 또는 PIN이 올바르지 않습니다');
     }
 
+    // 계정 잠금 확인
+    const isLocked = await this.checkAccountLocked(worker.id);
+    if (isLocked) {
+      throw new UnauthorizedException(
+        '로그인 시도가 너무 많습니다. 30분 후에 다시 시도해 주세요.',
+      );
+    }
+
     if (worker.status !== 'ACTIVE') {
+      await this.recordLoginHistory(worker.id, false, ipAddress, userAgent);
       throw new UnauthorizedException('비활성화된 계정입니다');
     }
 
     // 마스터/관리자/반장만 웹 대시보드 로그인 가능
     if (!['MASTER', 'ADMIN', 'SUPERVISOR'].includes(worker.role)) {
+      await this.recordLoginHistory(worker.id, false, ipAddress, userAgent);
       throw new UnauthorizedException(
         '관리자 이상 권한만 로그인할 수 있습니다',
       );
@@ -468,9 +505,12 @@ export class AuthService {
 
     const isPinValid = await bcrypt.compare(pin, worker.pin);
     if (!isPinValid) {
+      await this.recordLoginHistory(worker.id, false, ipAddress, userAgent);
       throw new UnauthorizedException('사번 또는 PIN이 올바르지 않습니다');
     }
 
+    // 성공 기록
+    await this.recordLoginHistory(worker.id, true, ipAddress, userAgent);
     this.logger.log(`Admin login: ${worker.employeeCode} (${worker.role})`);
 
     const token = this.generateToken(
@@ -495,7 +535,12 @@ export class AuthService {
   // 모바일 PIN 로그인: 작업자 ID + PIN 검증
   // 모든 활성 작업자 로그인 가능
   // ──────────────────────────────────────────────
-  async validatePin(workerId: string, pin: string) {
+  async validatePin(
+    workerId: string,
+    pin: string,
+    ipAddress?: string,
+    userAgent?: string,
+  ) {
     const worker = await this.prisma.worker.findUnique({
       where: { id: workerId },
       select: {
@@ -513,15 +558,27 @@ export class AuthService {
       throw new UnauthorizedException('작업자를 찾을 수 없습니다');
     }
 
+    // 계정 잠금 확인
+    const isLocked = await this.checkAccountLocked(worker.id);
+    if (isLocked) {
+      throw new UnauthorizedException(
+        '로그인 시도가 너무 많습니다. 30분 후에 다시 시도해 주세요.',
+      );
+    }
+
     if (worker.status !== 'ACTIVE') {
+      await this.recordLoginHistory(worker.id, false, ipAddress, userAgent);
       throw new UnauthorizedException('비활성화된 계정입니다');
     }
 
     const isPinValid = await bcrypt.compare(pin, worker.pin);
     if (!isPinValid) {
+      await this.recordLoginHistory(worker.id, false, ipAddress, userAgent);
       throw new UnauthorizedException('PIN이 올바르지 않습니다');
     }
 
+    // 성공 기록
+    await this.recordLoginHistory(worker.id, true, ipAddress, userAgent);
     this.logger.log(`Mobile login: ${worker.employeeCode} (${worker.role})`);
 
     return {
@@ -571,5 +628,53 @@ export class AuthService {
       refreshToken,
       tokenType: 'Bearer' as const,
     };
+  }
+
+  // ──────────────────────────────────────────────
+  // 로그인 이력 기록
+  // ──────────────────────────────────────────────
+  private async recordLoginHistory(
+    workerId: string,
+    success: boolean,
+    ipAddress?: string,
+    userAgent?: string,
+  ) {
+    try {
+      await this.prisma.loginHistory.create({
+        data: {
+          workerId,
+          success,
+          ipAddress: ipAddress ?? null,
+          userAgent: userAgent ?? null,
+        },
+      });
+    } catch (error) {
+      // 로그인 이력 기록 실패가 인증 자체를 막지 않도록 함
+      this.logger.error(`Failed to record login history: ${error}`);
+    }
+  }
+
+  // ──────────────────────────────────────────────
+  // 계정 잠금 여부 확인 (최근 30분 내 연속 5회 실패)
+  // ──────────────────────────────────────────────
+  private async checkAccountLocked(workerId: string): Promise<boolean> {
+    const lockoutCutoff = new Date(Date.now() - this.LOCKOUT_DURATION_MS);
+
+    // 최근 30분 내 로그인 이력 조회 (최신순)
+    const recentHistory = await this.prisma.loginHistory.findMany({
+      where: {
+        workerId,
+        createdAt: { gte: lockoutCutoff },
+      },
+      orderBy: { createdAt: 'desc' },
+      take: this.MAX_FAILED_ATTEMPTS,
+    });
+
+    if (recentHistory.length < this.MAX_FAILED_ATTEMPTS) {
+      return false;
+    }
+
+    // 최근 5개가 모두 실패인지 확인
+    return recentHistory.every((h) => !h.success);
   }
 }
