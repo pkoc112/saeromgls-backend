@@ -135,10 +135,11 @@ export class AuthService {
       },
     });
 
-    if (!worker || !worker.passwordHash) {
-      throw new UnauthorizedException(
-        '이메일 또는 비밀번호가 올바르지 않습니다',
-      );
+    if (!worker) {
+      throw new UnauthorizedException('등록되지 않은 이메일입니다');
+    }
+    if (!worker.passwordHash) {
+      throw new UnauthorizedException('비밀번호가 설정되지 않은 계정입니다. 비밀번호 재설정을 해주세요.');
     }
 
     // 계정 잠금 확인
@@ -157,9 +158,7 @@ export class AuthService {
     const isValid = await bcrypt.compare(password, worker.passwordHash);
     if (!isValid) {
       await this.recordLoginHistory(worker.id, false, ipAddress, userAgent);
-      throw new UnauthorizedException(
-        '이메일 또는 비밀번호가 올바르지 않습니다',
-      );
+      throw new UnauthorizedException('비밀번호가 올바르지 않습니다');
     }
 
     // 성공 기록
@@ -480,7 +479,7 @@ export class AuthService {
     });
 
     if (!worker) {
-      throw new UnauthorizedException('사번 또는 PIN이 올바르지 않습니다');
+      throw new UnauthorizedException('등록되지 않은 사번입니다');
     }
 
     // 계정 잠금 확인
@@ -507,7 +506,7 @@ export class AuthService {
     const isPinValid = await bcrypt.compare(pin, worker.pin);
     if (!isPinValid) {
       await this.recordLoginHistory(worker.id, false, ipAddress, userAgent);
-      throw new UnauthorizedException('사번 또는 PIN이 올바르지 않습니다');
+      throw new UnauthorizedException('PIN이 올바르지 않습니다');
     }
 
     // 성공 기록
