@@ -92,16 +92,24 @@ export class DashboardService {
     // 평균 작업 시간 (종료된 작업, 분 단위) -- raw SQL로 계산
     let avgDurationMinutes: number | null = null;
     try {
-      const durationResult = await this.prisma.$queryRaw<
+      const avgParams: any[] = [fromDate.toISOString(), toDate.toISOString()];
+      const avgSiteFilter = siteId
+        ? `AND started_by_worker_id IN (SELECT id FROM workers WHERE site_id = $3)`
+        : '';
+      if (siteId) avgParams.push(siteId);
+
+      const durationResult = await this.prisma.$queryRawUnsafe<
         { avg_minutes: number }[]
-      >`
-        SELECT AVG((strftime('%s', ended_at) - strftime('%s', started_at)) / 60.0) as avg_minutes
-        FROM work_items
-        WHERE started_at >= ${fromDate.toISOString()}
-          AND started_at <= ${toDate.toISOString()}
-          AND status = 'ENDED'
-          AND ended_at IS NOT NULL
-      `;
+      >(
+        `SELECT AVG(EXTRACT(EPOCH FROM (ended_at - started_at)) / 60.0) as avg_minutes
+         FROM work_items
+         WHERE started_at >= $1::timestamp
+           AND started_at <= $2::timestamp
+           AND status = 'ENDED'
+           AND ended_at IS NOT NULL
+           ${avgSiteFilter}`,
+        ...avgParams,
+      );
       avgDurationMinutes = durationResult[0]?.avg_minutes
         ? Math.round(durationResult[0].avg_minutes * 100) / 100
         : null;
