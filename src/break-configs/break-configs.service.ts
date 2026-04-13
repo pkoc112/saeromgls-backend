@@ -20,24 +20,13 @@ export class BreakConfigsService {
    * siteId가 있으면 해당 현장 설정을 먼저 조회, 없으면 전역 설정으로 fallback
    */
   async findAll(siteId?: string) {
-    // 관리자용: 활성+비활성 모두 반환
-    let data;
-    if (siteId) {
-      const siteConfigs = await this.prisma.breakConfig.findMany({
-        where: { siteId },
-        orderBy: { sortOrder: 'asc' },
-      });
-      if (siteConfigs.length > 0) {
-        data = siteConfigs;
-      }
-    }
+    // 사업장 격리: siteId가 있으면 해당 사업장만, 없으면 전체 (MASTER)
+    const where = siteId ? { siteId } : {};
 
-    if (!data) {
-      // siteId 미지정 시 전체 반환 (관리자가 모든 설정을 볼 수 있도록)
-      data = await this.prisma.breakConfig.findMany({
-        orderBy: { sortOrder: 'asc' },
-      });
-    }
+    const data = await this.prisma.breakConfig.findMany({
+      where,
+      orderBy: { sortOrder: 'asc' },
+    });
 
     return {
       data,
