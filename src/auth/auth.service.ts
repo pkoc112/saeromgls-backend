@@ -138,8 +138,12 @@ export class AuthService {
       }
     }
 
-    // 고유 사번 생성 (이메일 기반)
-    const employeeCode = `EM-${Date.now()}`;
+    // 고유 사번 생성 (이메일 기반 + 랜덤 접미사로 충돌 방지)
+    const employeeCode = `EM-${Date.now()}-${Math.random().toString(36).slice(2, 6).toUpperCase()}`;
+
+    // 랜덤 6자리 PIN 생성 (보안: 고정값 000000 대신)
+    const randomPin = Math.floor(100000 + Math.random() * 900000).toString();
+    const hashedPin = await bcrypt.hash(randomPin, 10);
 
     // 작업자 생성
     const worker = await this.prisma.worker.create({
@@ -149,7 +153,7 @@ export class AuthService {
         phone: dto.phone,
         passwordHash,
         employeeCode,
-        pin: await bcrypt.hash('000000', 10), // 기본 PIN
+        pin: hashedPin,
         role: 'WORKER',
         status: 'ACTIVE',
         siteId,
@@ -182,6 +186,8 @@ export class AuthService {
         email: worker.email,
         role: worker.role.toLowerCase(),
         siteId: worker.siteId,
+        employeeCode: worker.employeeCode,
+        pin: randomPin, // 최초 1회만 반환 — 사용자가 메모해야 함
       },
     };
   }

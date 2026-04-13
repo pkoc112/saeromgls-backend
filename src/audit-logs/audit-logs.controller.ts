@@ -10,6 +10,8 @@ import { AuditLogsService } from './audit-logs.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
+import { CurrentUser, JwtPayload } from '../common/decorators/current-user.decorator';
+import { resolveSiteId } from '../common/utils/site-scope';
 
 @Controller('admin/audit-logs')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -22,27 +24,32 @@ export class AuditLogsController {
   @Get()
   @ApiOperation({
     summary: '감사 로그 조회',
-    description: '작업 항목 ID, 작업자 ID, 액션 타입으로 필터 가능.',
+    description: '작업 항목 ID, 작업자 ID, 액션 타입으로 필터 가능. siteId 격리 적용.',
   })
   @ApiQuery({ name: 'page', required: false, type: Number })
   @ApiQuery({ name: 'limit', required: false, type: Number })
   @ApiQuery({ name: 'workItemId', required: false, type: String, description: '작업 항목 UUID 필터' })
   @ApiQuery({ name: 'actorWorkerId', required: false, type: String, description: '수행자 UUID 필터' })
   @ApiQuery({ name: 'action', required: false, enum: ['CREATE', 'END', 'EDIT', 'VOID'], description: '액션 타입 필터' })
+  @ApiQuery({ name: 'siteId', required: false, type: String, description: '사업장 UUID (MASTER만 지정 가능)' })
   @ApiResponse({ status: 200, description: '감사 로그 목록 + 페이지네이션' })
   findAll(
+    @CurrentUser() user: JwtPayload,
     @Query('page') page?: number,
     @Query('limit') limit?: number,
     @Query('workItemId') workItemId?: string,
     @Query('actorWorkerId') actorWorkerId?: string,
     @Query('action') action?: string,
+    @Query('siteId') querySiteId?: string,
   ) {
+    const siteId = resolveSiteId(user, querySiteId);
     return this.auditLogsService.findAll({
       page,
       limit,
       workItemId,
       actorWorkerId,
       action,
+      siteId,
     });
   }
 }

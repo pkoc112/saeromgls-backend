@@ -78,6 +78,7 @@ export class AuditLogsService {
 
   /**
    * 전체 감사 로그 조회 (관리자 전용, 페이지네이션)
+   * siteId 격리: actorWorker.siteId 기준 필터링
    */
   async findAll(params: {
     page?: number;
@@ -85,6 +86,7 @@ export class AuditLogsService {
     workItemId?: string;
     actorWorkerId?: string;
     action?: string;
+    siteId?: string;
   }) {
     const page = params.page || 1;
     const limit = params.limit || 50;
@@ -94,6 +96,13 @@ export class AuditLogsService {
     if (params.workItemId) where.workItemId = params.workItemId;
     if (params.actorWorkerId) where.actorWorkerId = params.actorWorkerId;
     if (params.action) where.action = params.action;
+
+    // siteId 격리: actorWorker의 siteId 기준 (NULL 호환)
+    if (params.siteId) {
+      where.actorWorker = {
+        OR: [{ siteId: params.siteId }, { siteId: null }],
+      };
+    }
 
     const [data, total] = await Promise.all([
       this.prisma.auditLog.findMany({
