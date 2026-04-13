@@ -87,29 +87,26 @@ export class DashboardService {
       totalQuantity: Number(w._sum.quantity ?? 0),
     }));
 
-    // 평균 작업 시간 (종료된 작업, 분 단위) -- raw SQL로 계산
+    // 평균 작업 시간 (종료된 작업, 분 단위) -- Prisma.sql 태그드 템플릿
     let avgDurationMinutes: number | null = null;
     try {
-      const avgParams: any[] = [fromDate.toISOString(), toDate.toISOString()];
-      const avgSiteFilter = siteId
-        ? `AND started_by_worker_id IN (SELECT id FROM workers WHERE site_id = $3)`
-        : '';
-      if (siteId) avgParams.push(siteId);
+      const siteFilter = siteId
+        ? Prisma.sql`AND started_by_worker_id IN (SELECT id FROM workers WHERE site_id = ${siteId})`
+        : Prisma.empty;
 
-      const durationResult = await this.prisma.$queryRawUnsafe<
+      const durationResult = await this.prisma.$queryRaw<
         { avg_minutes: number }[]
-      >(
-        `SELECT AVG(EXTRACT(EPOCH FROM (ended_at - started_at)) / 60.0) as avg_minutes
-         FROM work_items
-         WHERE started_at >= $1::timestamp
-           AND started_at <= $2::timestamp
-           AND status = 'ENDED'
-           AND ended_at IS NOT NULL
-           ${avgSiteFilter}`,
-        ...avgParams,
-      );
+      >(Prisma.sql`
+        SELECT AVG(EXTRACT(EPOCH FROM (ended_at - started_at)) / 60.0) as avg_minutes
+        FROM work_items
+        WHERE started_at >= ${fromDate}
+          AND started_at <= ${toDate}
+          AND status = 'ENDED'
+          AND ended_at IS NOT NULL
+          ${siteFilter}
+      `);
       avgDurationMinutes = durationResult[0]?.avg_minutes
-        ? Math.round(durationResult[0].avg_minutes * 100) / 100
+        ? Math.round(Number(durationResult[0].avg_minutes) * 100) / 100
         : null;
     } catch (err) {
       this.logger.error('평균 작업 시간 계산 실패', err instanceof Error ? err.stack : err);
@@ -159,10 +156,12 @@ export class DashboardService {
         dateExpr = `to_char(started_at AT TIME ZONE 'Asia/Seoul', 'YYYY-MM-DD')`;
     }
 
+    // siteFilter: 사용자 입력이 아닌 코드 분기이므로 SQL 인젝션 위험 없음
+    // dateExpr도 코드 내부 분기 (groupBy는 switch로 검증됨)
     const siteFilter = siteId
       ? `AND started_by_worker_id IN (SELECT id FROM workers WHERE site_id = $3)`
       : '';
-    const queryParams: any[] = [fromDate.toISOString(), toDate.toISOString()];
+    const queryParams: (string | Date)[] = [fromDate.toISOString(), toDate.toISOString()];
     if (siteId) queryParams.push(siteId);
 
     try {

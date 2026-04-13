@@ -1,11 +1,15 @@
 import { Controller, Post, Get, Patch, Body, Param, HttpCode, HttpStatus, UseGuards, Req } from '@nestjs/common';
 import { ApiTags, ApiOperation, ApiResponse, ApiBody, ApiBearerAuth } from '@nestjs/swagger';
 import { Request } from 'express';
-// Throttle removed - ThrottlerModule not registered in AppModule
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { PinLoginDto } from './dto/pin-login.dto';
 import { RegisterDto } from './dto/register.dto';
+import { EmailLoginDto } from './dto/email-login.dto';
+import { RefreshTokenDto } from './dto/refresh-token.dto';
+import { ResetPasswordDto } from './dto/reset-password.dto';
+import { UpdateMeDto } from './dto/update-me.dto';
+import { DeleteAccountDto } from './dto/delete-account.dto';
 import { JwtAuthGuard } from './jwt-auth.guard';
 import { CurrentUser, JwtPayload } from '../common/decorators/current-user.decorator';
 
@@ -55,7 +59,7 @@ export class AuthController {
   @ApiTags('Auth')
   @ApiOperation({ summary: '토큰 갱신' })
   @ApiResponse({ status: 200, description: '새 토큰 반환' })
-  async refreshToken(@Body() dto: { refreshToken: string }) {
+  async refreshToken(@Body() dto: RefreshTokenDto) {
     return this.authService.refreshAccessToken(dto.refreshToken);
   }
 
@@ -93,7 +97,7 @@ export class AuthController {
   @ApiTags('Auth')
   @ApiOperation({ summary: '이메일 로그인' })
   @ApiResponse({ status: 200, description: 'JWT 토큰 + 사용자 정보 반환' })
-  async emailLogin(@Body() dto: { email: string; password: string }, @Req() req: Request) {
+  async emailLogin(@Body() dto: EmailLoginDto, @Req() req: Request) {
     const ip = req.ip || req.headers['x-forwarded-for']?.toString();
     const ua = req.headers['user-agent'];
     const worker = await this.authService.validateEmailPassword(dto.email, dto.password, ip, ua);
@@ -121,8 +125,8 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @ApiTags('Auth')
   @ApiOperation({ summary: '비밀번호 재설정' })
-  async resetPassword(@Body() dto: { email: string; employeeCode: string; newPassword: string }) {
-    return this.authService.resetPassword(dto.email, dto.employeeCode, dto.newPassword);
+  async resetPassword(@Body() dto: ResetPasswordDto) {
+    return this.authService.resetPassword(dto.email || '', dto.employeeCode, dto.newPassword);
   }
 
   /**
@@ -183,7 +187,7 @@ export class AuthController {
   @ApiOperation({ summary: '내 정보 수정' })
   async updateMe(
     @CurrentUser('sub') workerId: string,
-    @Body() dto: { name?: string; phone?: string; currentPassword?: string; newPassword?: string },
+    @Body() dto: UpdateMeDto,
   ) {
     return this.authService.updateMe(workerId, dto);
   }
@@ -199,7 +203,7 @@ export class AuthController {
   @ApiOperation({ summary: '계정 탈퇴' })
   async deleteAccount(
     @CurrentUser('sub') workerId: string,
-    @Body() dto: { password: string },
+    @Body() dto: DeleteAccountDto,
   ) {
     return this.authService.deleteAccount(workerId, dto.password);
   }

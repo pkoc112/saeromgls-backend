@@ -21,10 +21,7 @@ export class AuthService {
   private readonly LOCKOUT_DURATION_MS = 30 * 60 * 1000;
 
   /** 메모리 기반 이메일 인증 코드 저장소 (email -> { code, expiresAt }) */
-  private verificationCodes = new Map<
-    string,
-    { code: string; expiresAt: Date }
-  >();
+  // 검증코드: DB 저장 (서버리스 호환 — 인메모리 Map은 요청마다 초기화될 수 있음)
 
   constructor(
     private readonly prisma: PrismaService,
@@ -342,13 +339,17 @@ export class AuthService {
   }
 
   // ──────────────────────────────────────────────
-  // 이메일 인증 코드 발급 (메모리 저장, 10분 유효)
+  // 이메일 인증 코드 발급 (DB 저장 — 서버리스 호환)
   // ──────────────────────────────────────────────
   async sendVerificationCode(email: string) {
     const code = Math.floor(100000 + Math.random() * 900000).toString();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10분
 
-    this.verificationCodes.set(email, { code, expiresAt });
+    // 기존 코드 삭제 후 새로 저장
+    await this.prisma.verificationCode.deleteMany({ where: { email } });
+    await this.prisma.verificationCode.create({
+      data: { email, code, expiresAt },
+    });
 
     this.logger.log(`Verification code sent to ${email}`);
 
@@ -364,14 +365,17 @@ export class AuthService {
   // 이메일 인증 코드 확인
   // ──────────────────────────────────────────────
   async verifyEmail(email: string, code: string) {
-    const stored = this.verificationCodes.get(email);
+    const stored = await this.prisma.verificationCode.findFirst({
+      where: { email },
+      orderBy: { createdAt: 'desc' },
+    });
 
     if (!stored) {
       throw new BadRequestException('인증 코드가 발급되지 않았습니다');
     }
 
     if (new Date() > stored.expiresAt) {
-      this.verificationCodes.delete(email);
+      await this.prisma.verificationCode.deleteMany({ where: { email } });
       throw new BadRequestException('인증 코드가 만료되었습니다');
     }
 
@@ -379,7 +383,7 @@ export class AuthService {
       throw new BadRequestException('인증 코드가 올바르지 않습니다');
     }
 
-    this.verificationCodes.delete(email);
+    await this.prisma.verificationCode.deleteMany({ where: { email } });
 
     // 이미 가입된 사용자가 있으면 emailVerified 업데이트
     const worker = await this.prisma.worker.findUnique({

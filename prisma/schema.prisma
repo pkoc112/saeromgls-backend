@@ -331,6 +331,18 @@ model AdminActivityLog {
   @@map("admin_activity_logs")
 }
 
+/// 이메일 인증 코드 (서버리스 호환 - DB 저장)
+model VerificationCode {
+  id        String   @id @default(uuid())
+  email     String
+  code      String
+  expiresAt DateTime @map("expires_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  @@index([email])
+  @@map("verification_codes")
+}
+
 /// 백업 작업
 model BackupJob {
   id          String    @id @default(uuid())
