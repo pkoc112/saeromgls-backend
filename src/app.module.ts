@@ -16,6 +16,10 @@ import { PerformanceModule } from './performance/performance.module';
 import { ReportsModule } from './reports/reports.module';
 import { ActivityLogsModule } from './activity-logs/activity-logs.module';
 import { DataProtectionModule } from './data-protection/data-protection.module';
+import { InspectionModule } from './inspection/inspection.module';
+import { InboundModule } from './inbound/inbound.module';
+import { DockModule } from './dock/dock.module';
+import { IncentivesModule } from './incentives/incentives.module';
 
 @Module({
   imports: [
@@ -35,6 +39,10 @@ import { DataProtectionModule } from './data-protection/data-protection.module';
     ReportsModule,
     ActivityLogsModule,
     DataProtectionModule,
+    InspectionModule,
+    InboundModule,
+    DockModule,
+    IncentivesModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })

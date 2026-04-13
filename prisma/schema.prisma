@@ -36,6 +36,15 @@ model Site {
   activityLogs       AdminActivityLog[]
   backupJobs         BackupJob[]
   restoreRequests    RestoreRequest[]
+  inspectionRecords  InspectionRecord[]
+  inboundSessions    InboundSession[]
+  dockSessions       DockSession[]
+  policyVersions     PolicyVersion[]
+  baselineSnapshots  BaselineSnapshot[]
+  scoreRuns          ScoreRun[]
+  objectionCases     ObjectionCase[]
+  approvalLogs       ApprovalLog[]
+  payoutBatches      PayoutBatch[]
 
   @@index([parentSiteId])
   @@map("sites")
@@ -100,8 +109,15 @@ model Worker {
   consents         UserConsent[]
   loginHistory     LoginHistory[]
   activityLogs     AdminActivityLog[]
-  restoreRequests  RestoreRequest[]
-  refreshTokens    RefreshToken[]
+  restoreRequests    RestoreRequest[]
+  refreshTokens      RefreshToken[]
+  inspections        InspectionRecord[] @relation("InspectedBy")
+  approvedInbounds   InboundSession[]   @relation("ApprovedInbound")
+  inboundParticipations InboundParticipant[] @relation("InboundParticipant")
+  dockSessions       DockSession[]      @relation("DockStartedBy")
+  dockParticipations DockParticipant[]  @relation("DockParticipant")
+  scoreEntries       ScoreEntry[]       @relation("ScoreEntries")
+  objections         ObjectionCase[]    @relation("Objections")
 
   @@index([siteId])
   @@index([status, role])
@@ -139,14 +155,22 @@ model WorkItem {
   deviceId          String?  @map("device_id")
   notes             String?
   idempotencyKey    String?  @unique @map("idempotency_key")
+  jobType           String   @default("OUTBOUND") @map("job_type")
+  metricMode        String   @default("INDIVIDUAL") @map("metric_mode")
+  scoreEligible     Boolean  @default(true) @map("score_eligible")
+  sourceWorkItemId  String?  @map("source_work_item_id")
+  sessionKey        String?  @map("session_key")
   createdAt         DateTime @default(now()) @map("created_at")
   updatedAt         DateTime @updatedAt @map("updated_at")
 
-  startedByWorker Worker          @relation("StartedBy", fields: [startedByWorkerId], references: [id])
-  endedByWorker   Worker?         @relation("EndedBy", fields: [endedByWorkerId], references: [id])
-  classification  Classification  @relation(fields: [classificationId], references: [id])
-  assignments     WorkAssignment[]
-  auditLogs       AuditLog[]
+  startedByWorker  Worker          @relation("StartedBy", fields: [startedByWorkerId], references: [id])
+  endedByWorker    Worker?         @relation("EndedBy", fields: [endedByWorkerId], references: [id])
+  classification   Classification  @relation(fields: [classificationId], references: [id])
+  sourceWorkItem   WorkItem?       @relation("SourceRef", fields: [sourceWorkItemId], references: [id])
+  derivedItems     WorkItem[]      @relation("SourceRef")
+  assignments      WorkAssignment[]
+  auditLogs        AuditLog[]
+  inspections      InspectionRecord[]
 
   @@index([status])
   @@index([startedAt])
@@ -394,4 +418,275 @@ model RestoreRequest {
 
   @@index([siteId])
   @@map("restore_requests")
+}
+
+// ================================================================
+// L2. Job Modules
+// ================================================================
+
+/// 검수 기록 (출고 작업 참조)
+model InspectionRecord {
+  id                  String   @id @default(uuid())
+  siteId              String   @map("site_id")
+  sourceWorkItemId    String   @map("source_work_item_id")
+  inspectedByWorkerId String   @map("inspected_by_worker_id")
+  result              String   @default("PASS") // PASS, ISSUE, RECHECK
+  issueType           String?  @map("issue_type")
+  quantityChecked     Int      @default(0) @map("quantity_checked")
+  quantityDefect      Int      @default(0) @map("quantity_defect")
+  notes               String?
+  inspectedAt         DateTime @default(now()) @map("inspected_at")
+  createdAt           DateTime @default(now()) @map("created_at")
+
+  site          Site     @relation(fields: [siteId], references: [id])
+  sourceWorkItem WorkItem @relation(fields: [sourceWorkItemId], references: [id])
+  inspectedBy   Worker   @relation("InspectedBy", fields: [inspectedByWorkerId], references: [id])
+
+  @@index([siteId])
+  @@index([sourceWorkItemId])
+  @@index([inspectedByWorkerId])
+  @@index([inspectedAt])
+  @@map("inspection_records")
+}
+
+/// 입고 세션 (관리자 승인형 총량)
+model InboundSession {
+  id                String    @id @default(uuid())
+  siteId            String    @map("site_id")
+  sessionDate       DateTime  @map("session_date")
+  shift             String    @default("AM") // AM, PM, FULL
+  supplierName      String?   @map("supplier_name")
+  totalQuantity     Int       @default(0) @map("total_quantity")
+  totalVolume       Decimal   @default(0) @db.Decimal(10, 2) @map("total_volume")
+  itemCount         Int       @default(0) @map("item_count")
+  expectedQuantity  Int       @default(0) @map("expected_quantity")
+  diffQuantity      Int       @default(0) @map("diff_quantity")
+  status            String    @default("PENDING") // PENDING, APPROVED, REJECTED
+  approvedByWorkerId String?  @map("approved_by_worker_id")
+  approvedAt        DateTime? @map("approved_at")
+  startedAt         DateTime? @map("started_at")
+  endedAt           DateTime? @map("ended_at")
+  notes             String?
+  rawData           String?   @map("raw_data") // 업로드된 엑셀 JSON
+  createdAt         DateTime  @default(now()) @map("created_at")
+
+  site       Site    @relation(fields: [siteId], references: [id])
+  approvedBy Worker? @relation("ApprovedInbound", fields: [approvedByWorkerId], references: [id])
+  participants InboundParticipant[]
+
+  @@index([siteId])
+  @@index([sessionDate])
+  @@index([status])
+  @@map("inbound_sessions")
+}
+
+/// 입고 세션 참여자
+model InboundParticipant {
+  id              String @id @default(uuid())
+  inboundSessionId String @map("inbound_session_id")
+  workerId        String @map("worker_id")
+
+  session InboundSession @relation(fields: [inboundSessionId], references: [id], onDelete: Cascade)
+  worker  Worker         @relation("InboundParticipant", fields: [workerId], references: [id])
+
+  @@unique([inboundSessionId, workerId])
+  @@map("inbound_participants")
+}
+
+/// 상하차/랩핑 세션 (도크 단위)
+model DockSession {
+  id              String    @id @default(uuid())
+  siteId          String    @map("site_id")
+  actionType      String    @default("LOAD") // LOAD, UNLOAD
+  dockNumber      String?   @map("dock_number")
+  vehicleNumber   String?   @map("vehicle_number")
+  totalQuantity   Int       @default(0) @map("total_quantity")
+  wrapIncluded    Boolean   @default(false) @map("wrap_included")
+  wrapLevel       String?   @map("wrap_level") // NONE, LIGHT, MEDIUM, HEAVY
+  status          String    @default("ACTIVE") // ACTIVE, ENDED
+  startedByWorkerId String  @map("started_by_worker_id")
+  startedAt       DateTime  @default(now()) @map("started_at")
+  endedAt         DateTime? @map("ended_at")
+  notes           String?
+  createdAt       DateTime  @default(now()) @map("created_at")
+
+  site      Site   @relation(fields: [siteId], references: [id])
+  startedBy Worker @relation("DockStartedBy", fields: [startedByWorkerId], references: [id])
+  participants DockParticipant[]
+
+  @@index([siteId])
+  @@index([startedAt])
+  @@index([status])
+  @@map("dock_sessions")
+}
+
+/// 도크 세션 참여자
+model DockParticipant {
+  id            String @id @default(uuid())
+  dockSessionId String @map("dock_session_id")
+  workerId      String @map("worker_id")
+  role          String @default("WORKER") // WORKER, WRAPPER
+
+  session DockSession @relation(fields: [dockSessionId], references: [id], onDelete: Cascade)
+  worker  Worker      @relation("DockParticipant", fields: [workerId], references: [id])
+
+  @@unique([dockSessionId, workerId])
+  @@map("dock_participants")
+}
+
+// ================================================================
+// L3. Incentive Engine
+// ================================================================
+
+/// 정책 버전 (가중치/기준 변경 이력)
+model PolicyVersion {
+  id          String   @id @default(uuid())
+  siteId      String   @map("site_id")
+  name        String
+  description String?
+  track       String   // OUTBOUND_RANKED, INBOUND_SUPPORT, INSPECTION_GOAL, DOCK_WRAP_GOAL, MANAGER_OPS
+  weights     String   // JSON: { performance: 60, reliability: 25, teamwork: 15 }
+  details     String?  // JSON: 트랙별 세부 가중치
+  status      String   @default("DRAFT") // DRAFT, SHADOW, ACTIVE, RETIRED
+  effectiveFrom DateTime? @map("effective_from")
+  effectiveTo   DateTime? @map("effective_to")
+  approvedBy  String?  @map("approved_by")
+  createdAt   DateTime @default(now()) @map("created_at")
+  updatedAt   DateTime @updatedAt @map("updated_at")
+
+  site      Site        @relation(fields: [siteId], references: [id])
+  scoreRuns ScoreRun[]
+
+  @@index([siteId])
+  @@index([track])
+  @@index([status])
+  @@map("policy_versions")
+}
+
+/// 기준치 스냅샷 (난이도, 목표값 등 월 단위 고정)
+model BaselineSnapshot {
+  id        String   @id @default(uuid())
+  siteId    String   @map("site_id")
+  month     String   // "2026-04"
+  type      String   // DIFFICULTY, TARGET, THRESHOLD
+  data      String   // JSON: 스냅샷 데이터
+  approvedBy String? @map("approved_by")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  site Site @relation(fields: [siteId], references: [id])
+
+  @@unique([siteId, month, type])
+  @@index([siteId])
+  @@map("baseline_snapshots")
+}
+
+/// 점수 계산 실행
+model ScoreRun {
+  id              String   @id @default(uuid())
+  siteId          String   @map("site_id")
+  policyVersionId String   @map("policy_version_id")
+  month           String   // "2026-04"
+  status          String   @default("RUNNING") // RUNNING, SHADOW, FROZEN, FINALIZED
+  totalWorkers    Int      @default(0) @map("total_workers")
+  calculatedAt    DateTime @default(now()) @map("calculated_at")
+  frozenAt        DateTime? @map("frozen_at")
+  finalizedAt     DateTime? @map("finalized_at")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  site          Site           @relation(fields: [siteId], references: [id])
+  policyVersion PolicyVersion  @relation(fields: [policyVersionId], references: [id])
+  entries       ScoreEntry[]
+
+  @@index([siteId])
+  @@index([month])
+  @@index([status])
+  @@map("score_runs")
+}
+
+/// 개인별 점수 항목
+model ScoreEntry {
+  id              String  @id @default(uuid())
+  scoreRunId      String  @map("score_run_id")
+  workerId        String  @map("worker_id")
+  track           String  // 직무 트랙
+  performanceScore Decimal @default(0) @db.Decimal(5, 2) @map("performance_score")
+  reliabilityScore Decimal @default(0) @db.Decimal(5, 2) @map("reliability_score")
+  teamworkScore    Decimal @default(0) @db.Decimal(5, 2) @map("teamwork_score")
+  totalScore       Decimal @default(0) @db.Decimal(5, 2) @map("total_score")
+  rank            Int?    // 상대평가 트랙만
+  details         String? // JSON: 세부 점수 breakdown
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  scoreRun ScoreRun @relation(fields: [scoreRunId], references: [id], onDelete: Cascade)
+  worker   Worker   @relation("ScoreEntries", fields: [workerId], references: [id])
+
+  @@unique([scoreRunId, workerId])
+  @@index([scoreRunId])
+  @@index([workerId])
+  @@map("score_entries")
+}
+
+/// 이의신청
+model ObjectionCase {
+  id           String    @id @default(uuid())
+  scoreEntryId String?   @map("score_entry_id")
+  workerId     String    @map("worker_id")
+  siteId       String    @map("site_id")
+  month        String
+  reason       String
+  status       String    @default("OPEN") // OPEN, REVIEWING, ACCEPTED, REJECTED
+  resolution   String?
+  resolvedBy   String?   @map("resolved_by")
+  resolvedAt   DateTime? @map("resolved_at")
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  worker Worker @relation("Objections", fields: [workerId], references: [id])
+  site   Site   @relation(fields: [siteId], references: [id])
+
+  @@index([siteId])
+  @@index([workerId])
+  @@index([month])
+  @@index([status])
+  @@map("objection_cases")
+}
+
+/// 승인 로그
+model ApprovalLog {
+  id          String   @id @default(uuid())
+  siteId      String   @map("site_id")
+  entityType  String   @map("entity_type") // SCORE_RUN, PAYOUT_BATCH, POLICY, BASELINE, INBOUND_SESSION
+  entityId    String   @map("entity_id")
+  action      String   // APPROVE, REJECT, FREEZE, FINALIZE
+  actorId     String   @map("actor_id")
+  reason      String?
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  site Site @relation(fields: [siteId], references: [id])
+
+  @@index([siteId])
+  @@index([entityType, entityId])
+  @@map("approval_logs")
+}
+
+/// 지급 배치
+model PayoutBatch {
+  id           String    @id @default(uuid())
+  siteId       String    @map("site_id")
+  scoreRunId   String    @map("score_run_id")
+  month        String
+  status       String    @default("DRAFT") // DRAFT, APPROVED, PAID, CANCELLED
+  totalAmount  Decimal   @default(0) @db.Decimal(12, 0) @map("total_amount")
+  workerCount  Int       @default(0) @map("worker_count")
+  approvedBy   String?   @map("approved_by")
+  approvedAt   DateTime? @map("approved_at")
+  paidAt       DateTime? @map("paid_at")
+  notes        String?
+  createdAt    DateTime  @default(now()) @map("created_at")
+
+  site Site @relation(fields: [siteId], references: [id])
+
+  @@index([siteId])
+  @@index([month])
+  @@index([status])
+  @@map("payout_batches")
 }
