@@ -94,7 +94,7 @@ export class AuthService {
       });
 
       this.logger.log(
-        `Employee linked: ${dto.email} → ${dto.employeeCode} (${target.name}, ${target.role})`,
+        `Employee linked: ${dto.employeeCode} (${target.role})`,
       );
 
       const token = this.generateToken(

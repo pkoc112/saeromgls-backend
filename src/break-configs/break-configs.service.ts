@@ -182,7 +182,7 @@ export class BreakConfigsService {
     const newEnd = dto.endHour * 60 + dto.endMin;
 
     const existing = await this.prisma.breakConfig.findMany({
-      where: { siteId: dto.siteId ?? null },
+      where: { siteId: dto.siteId ?? null, isActive: true },
     });
 
     for (const b of existing) {

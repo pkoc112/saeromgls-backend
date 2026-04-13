@@ -44,9 +44,9 @@ export class PerformanceController {
   getRankings(
     @Query('from') from: string,
     @Query('to') to: string,
-    @Query('sortBy') sortBy?: string,
-    @Query('siteId') querySiteId?: string,
-    @CurrentUser() user?: JwtPayload,
+    @Query('sortBy') sortBy: string | undefined,
+    @Query('siteId') querySiteId: string | undefined,
+    @CurrentUser() user: JwtPayload,
   ) {
     this.validateDateRange(from, to);
     const siteId = resolveSiteId(user, querySiteId);
@@ -61,8 +61,8 @@ export class PerformanceController {
   getSummary(
     @Query('from') from: string,
     @Query('to') to: string,
-    @Query('siteId') querySiteId?: string,
-    @CurrentUser() user?: JwtPayload,
+    @Query('siteId') querySiteId: string | undefined,
+    @CurrentUser() user: JwtPayload,
   ) {
     this.validateDateRange(from, to);
     const siteId = resolveSiteId(user, querySiteId);
@@ -75,8 +75,8 @@ export class PerformanceController {
   @ApiOperation({ summary: '인센티브 정책 조회' })
   @ApiQuery({ name: 'siteId', required: false, type: String })
   getIncentivePolicies(
-    @Query('siteId') querySiteId?: string,
-    @CurrentUser() user?: JwtPayload,
+    @Query('siteId') querySiteId: string | undefined,
+    @CurrentUser() user: JwtPayload,
   ) {
     const siteId = resolveSiteId(user, querySiteId);
     if (!siteId) return []; // siteId 없으면 빈 배열 반환 (MASTER가 전체 조회 시)
@@ -88,7 +88,7 @@ export class PerformanceController {
   @ApiOperation({ summary: '인센티브 정책 생성' })
   createIncentivePolicy(
     @Body() dto: CreateIncentivePolicyDto,
-    @CurrentUser() user?: JwtPayload,
+    @CurrentUser() user: JwtPayload,
   ) {
     // MASTER가 아닌 경우 자기 사업장만
     if (user?.role !== 'MASTER' && user?.siteId) {

@@ -28,7 +28,7 @@ export class DashboardController {
   @ApiQuery({ name: 'from', required: true, type: String })
   @ApiQuery({ name: 'to', required: true, type: String })
   @ApiQuery({ name: 'siteId', required: false, type: String })
-  getStats(@Query('from') from: string, @Query('to') to: string, @Query('siteId') querySiteId?: string, @CurrentUser() user?: JwtPayload) {
+  getStats(@Query('from') from: string, @Query('to') to: string, @Query('siteId') querySiteId: string | undefined, @CurrentUser() user: JwtPayload) {
     this.validateDateRange(from, to);
     const siteId = resolveSiteId(user, querySiteId);
     return this.dashboardService.getStats(from, to, siteId);
@@ -43,9 +43,9 @@ export class DashboardController {
   getTrends(
     @Query('from') from: string,
     @Query('to') to: string,
-    @Query('groupBy') groupBy?: 'hour' | 'day' | 'week' | 'month',
-    @Query('siteId') querySiteId?: string,
-    @CurrentUser() user?: JwtPayload,
+    @Query('groupBy') groupBy: 'hour' | 'day' | 'week' | 'month' | undefined,
+    @Query('siteId') querySiteId: string | undefined,
+    @CurrentUser() user: JwtPayload,
   ) {
     this.validateDateRange(from, to);
     const siteId = resolveSiteId(user, querySiteId);
@@ -64,7 +64,7 @@ export class DashboardController {
     @Query('to') to: string,
     @Query('siteId') querySiteId: string,
     @Res() res: Response,
-    @CurrentUser() user?: JwtPayload,
+    @CurrentUser() user: JwtPayload,
   ) {
     this.validateDateRange(from, to);
     const siteId = resolveSiteId(user, querySiteId);
@@ -83,8 +83,8 @@ export class DashboardController {
   getComparison(
     @Query('from') from: string,
     @Query('to') to: string,
-    @Query('siteId') querySiteId?: string,
-    @CurrentUser() user?: JwtPayload,
+    @Query('siteId') querySiteId: string | undefined,
+    @CurrentUser() user: JwtPayload,
   ) {
     this.validateDateRange(from, to);
     const siteId = resolveSiteId(user, querySiteId);
@@ -99,8 +99,8 @@ export class DashboardController {
   getAlerts(
     @Query('from') from: string,
     @Query('to') to: string,
-    @Query('siteId') querySiteId?: string,
-    @CurrentUser() user?: JwtPayload,
+    @Query('siteId') querySiteId: string | undefined,
+    @CurrentUser() user: JwtPayload,
   ) {
     this.validateDateRange(from, to);
     const siteId = resolveSiteId(user, querySiteId);
@@ -112,7 +112,7 @@ export class DashboardController {
   @ApiQuery({ name: 'siteId', required: true, type: String })
   getGoals(
     @Query('siteId') querySiteId: string,
-    @CurrentUser() user?: JwtPayload,
+    @CurrentUser() user: JwtPayload,
   ) {
     const siteId = resolveSiteId(user, querySiteId);
     if (!siteId) throw new BadRequestException('siteId가 필요합니다');
@@ -124,7 +124,7 @@ export class DashboardController {
   @ApiOperation({ summary: '대시보드 목표 생성' })
   createGoal(
     @Body() body: { siteId: string; periodType: string; targetCount?: number; targetVolume?: number; targetQuantity?: number },
-    @CurrentUser() user?: JwtPayload,
+    @CurrentUser() user: JwtPayload,
   ) {
     if (user?.role !== 'MASTER' && user?.siteId) {
       body.siteId = user.siteId;
