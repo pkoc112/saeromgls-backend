@@ -13,6 +13,8 @@ import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { EntitlementGuard } from '../common/guards/entitlement.guard';
 import { Feature } from '../common/decorators/feature.decorator';
+import { CurrentUser, JwtPayload } from '../common/decorators/current-user.decorator';
+import { resolveSiteId } from '../common/utils/site-scope';
 import { IsDateString, IsNotEmpty } from 'class-validator';
 import { ApiProperty } from '@nestjs/swagger';
 
@@ -74,6 +76,23 @@ export class AiController {
     return this.aiService.detectAnomalies(dto.fromDate, dto.toDate);
   }
 
+  @Post('difficulty-analysis')
+  @ApiOperation({
+    summary: '납품처 난이도 분석',
+    description:
+      'Claude AI를 사용하여 납품처별 작업 난이도를 분석합니다. ' +
+      'CBM당 소요시간, 작업시간 편차, 투입인원 등을 기반으로 A~E 등급을 매깁니다.',
+  })
+  @ApiBody({ type: AiAnalysisRequestDto })
+  @ApiResponse({ status: 201, description: '난이도 분석 완료' })
+  analyzeDifficulty(
+    @Body() dto: AiAnalysisRequestDto,
+    @CurrentUser() user?: JwtPayload,
+  ) {
+    const siteId = resolveSiteId(user, undefined);
+    return this.aiService.analyzeDifficulty(dto.fromDate, dto.toDate, siteId);
+  }
+
   @Get('insights')
   @ApiOperation({
     summary: '생성된 인사이트 목록',
@@ -82,7 +101,7 @@ export class AiController {
   @ApiQuery({
     name: 'type',
     required: false,
-    enum: ['WEEKLY_SUMMARY', 'ANOMALY'],
+    enum: ['WEEKLY_SUMMARY', 'ANOMALY', 'DIFFICULTY_ANALYSIS'],
     description: '인사이트 유형 필터',
   })
   @ApiQuery({ name: 'page', required: false, type: Number })

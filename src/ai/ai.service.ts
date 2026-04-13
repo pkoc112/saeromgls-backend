@@ -194,6 +194,152 @@ ${JSON.stringify(analysisData, null, 2)}
     };
   }
 
+  /**
+   * 납품처 난이도 분석
+   * 한달치 작업 데이터를 기반으로 납품처별 난이도를 AI가 평가
+   */
+  async analyzeDifficulty(fromDate: string, toDate: string, siteId?: string) {
+    this.ensureClientReady();
+
+    const from = new Date(fromDate);
+    const to = new Date(toDate);
+    to.setHours(23, 59, 59, 999);
+
+    const where: any = {
+      startedAt: { gte: from, lte: to },
+      status: 'ENDED',
+    };
+    if (siteId) {
+      where.startedByWorker = { OR: [{ siteId }, { siteId: null }] };
+    }
+
+    const workItems = await this.prisma.workItem.findMany({
+      where,
+      select: {
+        volume: true,
+        quantity: true,
+        startedAt: true,
+        endedAt: true,
+        classification: { select: { code: true, displayName: true } },
+        startedByWorker: { select: { employeeCode: true } },
+        assignments: {
+          select: { worker: { select: { employeeCode: true } } },
+        },
+      },
+    });
+
+    if (workItems.length === 0) {
+      return { message: '해당 기간에 완료된 작업 데이터가 없습니다', period: `${fromDate} ~ ${toDate}` };
+    }
+
+    // 납품처별 통계 집계
+    const byDest: Record<string, {
+      name: string;
+      count: number;
+      totalVolume: number;
+      totalQuantity: number;
+      durations: number[];
+      workerSet: Set<string>;
+    }> = {};
+
+    for (const item of workItems) {
+      const code = item.classification.code;
+      const name = item.classification.displayName;
+      if (!byDest[code]) {
+        byDest[code] = { name, count: 0, totalVolume: 0, totalQuantity: 0, durations: [], workerSet: new Set() };
+      }
+      const d = byDest[code];
+      d.count++;
+      d.totalVolume += Number(item.volume);
+      d.totalQuantity += item.quantity;
+      if (item.endedAt) {
+        d.durations.push((item.endedAt.getTime() - item.startedAt.getTime()) / 60000);
+      }
+      d.workerSet.add(item.startedByWorker.employeeCode);
+      for (const a of item.assignments) {
+        d.workerSet.add(a.worker.employeeCode);
+      }
+    }
+
+    // Claude에 보낼 데이터 정리
+    const destStats = Object.entries(byDest).map(([code, d]) => {
+      const avgMin = d.durations.length > 0
+        ? Math.round(d.durations.reduce((a, b) => a + b, 0) / d.durations.length)
+        : 0;
+      const stdDev = d.durations.length > 1
+        ? Math.round(Math.sqrt(d.durations.reduce((sum, v) => sum + Math.pow(v - avgMin, 2), 0) / d.durations.length))
+        : 0;
+      const avgVolume = d.count > 0 ? Math.round((d.totalVolume / d.count) * 100) / 100 : 0;
+      const minPerCbm = d.totalVolume > 0
+        ? Math.round((d.durations.reduce((a, b) => a + b, 0) / d.totalVolume) * 10) / 10
+        : 0;
+
+      return {
+        code,
+        name: d.name,
+        count: d.count,
+        avgVolumeCbm: avgVolume,
+        totalQuantityBox: d.totalQuantity,
+        avgDurationMin: avgMin,
+        stdDevMin: stdDev,
+        minPerCbm,
+        workerCount: d.workerSet.size,
+      };
+    }).sort((a, b) => b.count - a.count);
+
+    const prompt = `당신은 물류센터 작업 데이터 분석 전문가입니다.
+다음은 ${fromDate} ~ ${toDate} 기간의 납품처별 작업 통계입니다.
+
+**총 ${workItems.length}건 완료 작업, ${destStats.length}개 납품처**
+
+납품처별 통계:
+${JSON.stringify(destStats, null, 2)}
+
+각 필드 설명:
+- count: 작업 건수
+- avgVolumeCbm: 건당 평균 용적(CBM)
+- totalQuantityBox: 총 수량(BOX)
+- avgDurationMin: 평균 작업시간(분)
+- stdDevMin: 작업시간 표준편차(분) — 높을수록 불안정
+- minPerCbm: CBM당 소요시간(분) — 높을수록 효율 낮음
+- workerCount: 투입 작업자 수
+
+다음 분석을 수행해주세요:
+
+## 1. 납품처 난이도 등급 (A~E)
+각 납품처에 난이도 등급을 매기고 근거를 설명해주세요.
+- A (매우 쉬움): 효율적, 시간 안정적
+- B (쉬움): 평균 수준
+- C (보통): 일부 어려움
+- D (어려움): 시간 많이 걸림, 불안정
+- E (매우 어려움): 고난이도
+
+## 2. 효율성 분석
+CBM당 소요시간 기준으로 가장 효율적인/비효율적인 납품처 Top 3
+
+## 3. 인력 배치 제안
+난이도 기반으로 어떤 납품처에 숙련자를 배치해야 하는지 제안
+
+## 4. 운영 개선 포인트
+데이터에서 발견된 개선 가능한 포인트
+
+마크다운 형식으로 간결하게 작성해주세요. 표를 적극 활용해주세요.`;
+
+    const content = await this.callClaude(prompt);
+
+    const insight = await this.prisma.dashboardInsight.create({
+      data: {
+        type: 'DIFFICULTY_ANALYSIS',
+        period: `${fromDate} ~ ${toDate}`,
+        content,
+        ...(siteId && { siteId }),
+        generatedAt: new Date(),
+      },
+    });
+
+    return insight;
+  }
+
   // ======================== Internal ========================
 
   /**
