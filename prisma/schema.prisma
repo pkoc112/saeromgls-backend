@@ -155,6 +155,7 @@ model WorkItem {
   deviceId          String?  @map("device_id")
   notes             String?
   idempotencyKey    String?  @unique @map("idempotency_key")
+  batchId           String?  @map("batch_id")
   jobType           String   @default("OUTBOUND") @map("job_type")
   metricMode        String   @default("INDIVIDUAL") @map("metric_mode")
   scoreEligible     Boolean  @default(true) @map("score_eligible")
@@ -180,6 +181,7 @@ model WorkItem {
   @@index([classificationId, status])
   @@index([startedByWorkerId, status])
   @@index([endedByWorkerId])
+  @@index([batchId])
   @@map("work_items")
 }
 

@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { kstStartOfDay, kstEndOfDay } from '../common/kst-date.util';
+import { calculateBatchAdjustedTime } from '../common/utils/batch-time.util';
 import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import { CreateWorkItemDto } from './dto/create-work-item.dto';
 import { EndWorkItemDto } from './dto/end-work-item.dto';
@@ -431,8 +432,30 @@ export class WorkItemsService {
       this.prisma.workItem.count({ where }),
     ]);
 
+    // 동시작업 시간 비례 분배 계산
+    const batchMap = calculateBatchAdjustedTime(
+      data.map((d) => ({
+        id: d.id,
+        startedByWorkerId: d.startedByWorkerId,
+        batchId: (d as any).batchId || null,
+        volume: d.volume,
+        startedAt: d.startedAt,
+        endedAt: d.endedAt,
+      })),
+    );
+
+    const enriched = data.map((d) => {
+      const adj = batchMap.get(d.id);
+      return {
+        ...d,
+        adjustedMinutes: adj?.adjustedMinutes ?? null,
+        rawMinutes: adj?.rawMinutes ?? null,
+        concurrentCount: adj?.concurrentCount ?? 1,
+      };
+    });
+
     return {
-      data,
+      data: enriched,
       meta: {
         total,
         page,
