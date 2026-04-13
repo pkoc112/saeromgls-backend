@@ -50,7 +50,7 @@ export class ClassificationsController {
 
   @Post('admin/classifications')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('ADMIN', 'SUPERVISOR')
+  @Roles('ADMIN')
   @ApiBearerAuth('jwt')
   @ApiTags('Admin Classifications')
   @ApiOperation({ summary: '분류 생성 (사업장 자동 배정)' })
@@ -69,7 +69,7 @@ export class ClassificationsController {
 
   @Patch('admin/classifications/:id')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('ADMIN', 'SUPERVISOR')
+  @Roles('ADMIN')
   @ApiBearerAuth('jwt')
   @ApiTags('Admin Classifications')
   @ApiOperation({ summary: '분류 수정 (관리자 전용)' })
