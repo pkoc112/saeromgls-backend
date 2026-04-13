@@ -165,7 +165,7 @@ export class SubscriptionsController {
   // ──────────────────────────────────────────────
   @Get('subscriptions/all')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('ADMIN')
+  @Roles('MASTER')
   @ApiBearerAuth('jwt')
   @ApiOperation({
     summary: '전체 사업장 구독 현황 목록',
@@ -182,7 +182,7 @@ export class SubscriptionsController {
   // ──────────────────────────────────────────────
   @Post('subscriptions/change-plan')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('ADMIN')
+  @Roles('MASTER')
   @ApiBearerAuth('jwt')
   @ApiOperation({
     summary: '사업장 플랜 변경',
@@ -200,7 +200,7 @@ export class SubscriptionsController {
   // ──────────────────────────────────────────────
   @Post('subscriptions/activate')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('ADMIN')
+  @Roles('MASTER')
   @ApiBearerAuth('jwt')
   @ApiOperation({
     summary: '구독 활성화',
@@ -221,7 +221,7 @@ export class SubscriptionsController {
   // ──────────────────────────────────────────────
   @Post('subscriptions/cancel')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('ADMIN')
+  @Roles('MASTER')
   @ApiBearerAuth('jwt')
   @ApiOperation({
     summary: '구독 해지',
@@ -242,7 +242,7 @@ export class SubscriptionsController {
   // ──────────────────────────────────────────────
   @Post('subscriptions/grant-trial')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('ADMIN')
+  @Roles('MASTER')
   @ApiBearerAuth('jwt')
   @ApiOperation({
     summary: '무료 체험 부여',

@@ -9,7 +9,12 @@ import { JwtStrategy } from './jwt.strategy';
   imports: [
     PassportModule.register({ defaultStrategy: 'jwt' }),
     JwtModule.register({
-      secret: process.env.JWT_SECRET || 'fallback-secret-for-dev',
+      secret: (() => {
+        if (process.env.NODE_ENV === 'production' && !process.env.JWT_SECRET) {
+          throw new Error('JWT_SECRET required in production');
+        }
+        return process.env.JWT_SECRET || 'fallback-secret-for-dev';
+      })(),
       signOptions: {
         expiresIn: process.env.JWT_EXPIRES_IN || '8h',
       },

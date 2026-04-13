@@ -89,7 +89,7 @@ export class WorkersController {
   @ApiParam({ name: 'id', description: '작업자 UUID' })
   @ApiResponse({ status: 200, description: '작업자 수정 완료' })
   @ApiResponse({ status: 404, description: '작업자 없음' })
-  update(
+  async update(
     @CurrentUser() user: JwtPayload,
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateWorkerDto,
@@ -97,6 +97,13 @@ export class WorkersController {
     // ADMIN이 사업장 변경을 시도하면 차단 (MASTER만 가능)
     if (user.role !== 'MASTER' && dto.siteId && dto.siteId !== user.siteId) {
       throw new ForbiddenException('사업장 변경은 마스터 관리자만 가능합니다');
+    }
+    // 대상 작업자가 자기 사업장 소속인지 확인
+    if (user.role !== 'MASTER') {
+      const target = await this.workersService.findOne(id);
+      if (target.siteId && target.siteId !== user.siteId) {
+        throw new ForbiddenException('다른 사업장의 작업자를 수정할 수 없습니다');
+      }
     }
     return this.workersService.update(id, dto);
   }
@@ -109,7 +116,17 @@ export class WorkersController {
   @ApiTags('Admin Workers')
   @ApiOperation({ summary: '작업자 영구 삭제 (관리자 전용)' })
   @ApiParam({ name: 'id', description: '작업자 UUID' })
-  remove(@Param('id', ParseUUIDPipe) id: string) {
+  async remove(
+    @CurrentUser() user: JwtPayload,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    // 대상 작업자가 자기 사업장 소속인지 확인
+    if (user.role !== 'MASTER') {
+      const target = await this.workersService.findOne(id);
+      if (target.siteId && target.siteId !== user.siteId) {
+        throw new ForbiddenException('다른 사업장의 작업자를 삭제할 수 없습니다');
+      }
+    }
     return this.workersService.delete(id);
   }
 

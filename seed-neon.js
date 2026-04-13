@@ -1,11 +1,12 @@
 const https = require('https');
 
-// DB 접속 정보는 환경변수 또는 DATABASE_URL에서 추출
+// DB 접속 정보는 환경변수 DATABASE_URL에서 추출 (필수)
 const DB_URL = process.env.DATABASE_URL || '';
+if (!DB_URL) { console.error('DATABASE_URL not set'); process.exit(1); }
 const HOST_MATCH = DB_URL.match(/@([^/]+)\//);
-const DB_HOST = HOST_MATCH ? HOST_MATCH[1] : 'ep-falling-wind-am644wzp.c-5.us-east-1.aws.neon.tech';
+const DB_HOST = HOST_MATCH ? HOST_MATCH[1] : '';
 const EP = `https://${DB_HOST}/sql`;
-const CONN = DB_URL || 'postgresql://neondb_owner:npg_gWPeBp9aAfn3@ep-falling-wind-am644wzp.c-5.us-east-1.aws.neon.tech/neondb?sslmode=require';
+const CONN = DB_URL;
 
 function runSQL(sql, params = []) {
   return new Promise((resolve, reject) => {
@@ -68,7 +69,7 @@ async function seed() {
 
   for (const [code, name, order] of topCats) {
     const r = await runSQL(
-      "INSERT INTO classifications (id, code, display_name, sort_order, is_active, created_at) VALUES (gen_random_uuid(), $1, $2, $3, true, NOW()) ON CONFLICT (code) DO UPDATE SET display_name=$2, sort_order=$3, is_active=true",
+      "INSERT INTO classifications (id, code, display_name, sort_order, is_active, created_at) VALUES (gen_random_uuid(), $1, $2, $3, true, NOW()) ON CONFLICT (code) DO UPDATE SET display_name=$2, sort_order=$3",
       [code, name, order]
     );
     console.log(`Category ${code}: ${r.command || r.message || 'ok'}`);

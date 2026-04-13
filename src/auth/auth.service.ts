@@ -29,7 +29,11 @@ export class AuthService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
-  ) {}
+  ) {
+    if (process.env.NODE_ENV === 'production' && !process.env.JWT_SECRET) {
+      throw new Error('JWT_SECRET required in production');
+    }
+  }
 
   // ──────────────────────────────────────────────
   // 회원가입 (이메일/비밀번호 기반)
@@ -346,7 +350,7 @@ export class AuthService {
 
     this.verificationCodes.set(email, { code, expiresAt });
 
-    this.logger.log(`Verification code sent to ${email}: ${code}`);
+    this.logger.log(`Verification code sent to ${email}`);
 
     // TODO: 실제 이메일 발송 연동
     return {
@@ -530,7 +534,7 @@ export class AuthService {
 
     await this.prisma.worker.update({
       where: { id: workerId },
-      data: { status: 'INACTIVE' },
+      data: { status: 'INACTIVE', email: null },
     });
 
     this.logger.log(`Account deactivated: ${workerId}`);

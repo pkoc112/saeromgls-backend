@@ -7,6 +7,9 @@ import { JwtPayload } from '../common/decorators/current-user.decorator';
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
   constructor(private readonly prisma: PrismaService) {
+    if (process.env.NODE_ENV === 'production' && !process.env.JWT_SECRET) {
+      throw new Error('JWT_SECRET required in production');
+    }
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
