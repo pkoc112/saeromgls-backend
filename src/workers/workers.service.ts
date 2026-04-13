@@ -242,7 +242,7 @@ export class WorkersService {
     await this.prisma.$transaction([
       this.prisma.userConsent.deleteMany({ where: { workerId: id } }),
       this.prisma.loginHistory.deleteMany({ where: { workerId: id } }),
-      this.prisma.adminActivityLog.deleteMany({ where: { workerId: id } }),
+      this.prisma.adminActivityLog.deleteMany({ where: { actorWorkerId: id } }),
       this.prisma.worker.delete({ where: { id } }),
     ]);
     this.logger.log(`Worker deleted: ${existing.employeeCode}`);
