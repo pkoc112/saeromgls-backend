@@ -156,7 +156,7 @@ export class WorkItemsService {
       ];
     }
 
-    return this.prisma.workItem.findMany({
+    const data = await this.prisma.workItem.findMany({
       where,
       include: {
         classification: { select: { id: true, code: true, displayName: true } },
@@ -166,7 +166,28 @@ export class WorkItemsService {
         },
       },
       orderBy: { startedAt: 'desc' },
-      take: 200, // 무제한 방지
+      take: 200,
+    });
+
+    // 동시작업 시간 비례 분배
+    const batchMap = calculateBatchAdjustedTime(
+      data.map((d) => ({
+        id: d.id,
+        startedByWorkerId: d.startedByWorkerId,
+        batchId: d.batchId || null,
+        volume: d.volume,
+        startedAt: d.startedAt,
+        endedAt: d.endedAt,
+      })),
+    );
+
+    return data.map((d) => {
+      const adj = batchMap.get(d.id);
+      return {
+        ...d,
+        adjustedMinutes: adj?.adjustedMinutes ?? null,
+        concurrentCount: adj?.concurrentCount ?? 1,
+      };
     });
   }
 
