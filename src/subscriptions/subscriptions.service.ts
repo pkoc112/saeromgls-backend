@@ -7,6 +7,31 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 
+// ══════════════════════════════════════════════
+// 구독 상태 전이 상수 (State Machine)
+// ══════════════════════════════════════════════
+export type SubscriptionStatus =
+  | 'TRIAL'
+  | 'ACTIVE'
+  | 'PAST_DUE'
+  | 'SUSPENDED'
+  | 'CANCELLED'
+  | 'EXPIRED';
+
+/**
+ * 허용된 상태 전이 맵
+ *   key   = 현재 상태
+ *   value = 전이 가능한 상태 목록
+ */
+export const VALID_TRANSITIONS: Record<SubscriptionStatus, SubscriptionStatus[]> = {
+  TRIAL:     ['ACTIVE', 'CANCELLED', 'EXPIRED'],
+  ACTIVE:    ['PAST_DUE', 'CANCELLED'],
+  PAST_DUE:  ['ACTIVE', 'SUSPENDED'],
+  SUSPENDED: ['ACTIVE', 'CANCELLED'],
+  CANCELLED: [],
+  EXPIRED:   [],
+};
+
 @Injectable()
 export class SubscriptionsService {
   private readonly logger = new Logger(SubscriptionsService.name);
@@ -16,6 +41,9 @@ export class SubscriptionsService {
 
   /** PAST_DUE 상태 유지 최대 일수 (초과 시 SUSPENDED) */
   private readonly PAST_DUE_GRACE_DAYS = 7;
+
+  /** PAST_DUE → SUSPENDED 까지의 유예 일수 */
+  private readonly SUSPENDED_GRACE_DAYS = 30;
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -30,9 +58,9 @@ export class SubscriptionsService {
   }
 
   // ──────────────────────────────────────────────
-  // 구독 상태 자동 전이 체크
+  // 구독 상태 자동 전이 체크 (상태 머신 기반)
   // TRIAL → (14일 후) → EXPIRED
-  // ACTIVE → (기간 만료) → PAST_DUE → (7일) → SUSPENDED
+  // ACTIVE → (기간 만료) → PAST_DUE → (30일) → SUSPENDED
   // ──────────────────────────────────────────────
   async checkSubscriptionStatus(subscriptionId: string) {
     const subscription = await this.prisma.subscription.findUnique({
@@ -41,45 +69,61 @@ export class SubscriptionsService {
     if (!subscription) return null;
 
     const now = new Date();
-    let newStatus: string | null = null;
+    const currentStatus = subscription.status as SubscriptionStatus;
+    let targetStatus: SubscriptionStatus | null = null;
+    let reason = '';
 
-    // TRIAL → EXPIRED
+    // TRIAL → EXPIRED (체험 기간 만료)
     if (
-      subscription.status === 'TRIAL' &&
+      currentStatus === 'TRIAL' &&
       subscription.trialEndsAt &&
       subscription.trialEndsAt < now
     ) {
-      newStatus = 'EXPIRED';
+      targetStatus = 'EXPIRED';
+      reason = '체험 기간 만료 (자동)';
     }
 
     // ACTIVE → PAST_DUE (기간 만료 시)
     if (
-      subscription.status === 'ACTIVE' &&
+      currentStatus === 'ACTIVE' &&
       subscription.currentPeriodEnd < now
     ) {
-      newStatus = 'PAST_DUE';
+      targetStatus = 'PAST_DUE';
+      reason = '구독 기간 만료 — 결제 필요 (자동)';
     }
 
-    // PAST_DUE → SUSPENDED (7일 유예 초과)
-    if (subscription.status === 'PAST_DUE') {
+    // PAST_DUE → SUSPENDED (유예기간 초과)
+    if (currentStatus === 'PAST_DUE') {
       const gracePeriodEnd = new Date(subscription.currentPeriodEnd);
       gracePeriodEnd.setDate(
-        gracePeriodEnd.getDate() + this.PAST_DUE_GRACE_DAYS,
+        gracePeriodEnd.getDate() + this.SUSPENDED_GRACE_DAYS,
       );
       if (now > gracePeriodEnd) {
-        newStatus = 'SUSPENDED';
+        targetStatus = 'SUSPENDED';
+        reason = `미결제 유예기간(${this.SUSPENDED_GRACE_DAYS}일) 초과 (자동)`;
       }
     }
 
-    if (newStatus) {
-      this.logger.log(
-        `Subscription ${subscriptionId} status transition: ${subscription.status} → ${newStatus}`,
-      );
-      await this.prisma.subscription.update({
-        where: { id: subscriptionId },
-        data: { status: newStatus },
-      });
-      return newStatus;
+    if (targetStatus) {
+      // 상태 머신 전이 검증 후 전이
+      const allowed = VALID_TRANSITIONS[currentStatus];
+      if (allowed && allowed.includes(targetStatus)) {
+        await this.prisma.subscription.update({
+          where: { id: subscriptionId },
+          data: { status: targetStatus },
+        });
+        await this.recordTransitionAudit(
+          subscription.siteId,
+          subscriptionId,
+          currentStatus,
+          targetStatus,
+          reason,
+        );
+        this.logger.log(
+          `Subscription ${subscriptionId} auto-transition: ${currentStatus} → ${targetStatus}`,
+        );
+        return targetStatus;
+      }
     }
 
     return subscription.status;
@@ -483,5 +527,213 @@ export class SubscriptionsService {
       message: `${plan.name} 플랜 ${this.TRIAL_DAYS}일 무료 체험이 시작되었습니다`,
       trialEndsAt: trialEnd,
     };
+  }
+
+  // ══════════════════════════════════════════════
+  // 구독 상태 전이 (State Machine)
+  // ══════════════════════════════════════════════
+
+  /**
+   * 구독 상태를 전이하고 감사 로그를 기록합니다.
+   * VALID_TRANSITIONS 맵에 정의된 전이만 허용됩니다.
+   *
+   * @param subscriptionId 구독 ID
+   * @param newStatus      전이할 상태
+   * @param reason         전이 사유 (감사 로그용)
+   * @param actorId        전이 수행자 ID (수동 전이 시)
+   */
+  async transitionStatus(
+    subscriptionId: string,
+    newStatus: SubscriptionStatus,
+    reason: string,
+    actorId?: string,
+  ) {
+    const subscription = await this.prisma.subscription.findUnique({
+      where: { id: subscriptionId },
+      include: { site: { select: { name: true } } },
+    });
+
+    if (!subscription) {
+      throw new NotFoundException('구독을 찾을 수 없습니다');
+    }
+
+    const currentStatus = subscription.status as SubscriptionStatus;
+
+    // 현재 상태가 유효한 상태인지 확인
+    if (!VALID_TRANSITIONS[currentStatus]) {
+      throw new BadRequestException(
+        `알 수 없는 현재 상태입니다: ${currentStatus}`,
+      );
+    }
+
+    // 전이가 허용되는지 확인
+    const allowed = VALID_TRANSITIONS[currentStatus];
+    if (!allowed.includes(newStatus)) {
+      throw new BadRequestException(
+        `상태 전이가 허용되지 않습니다: ${currentStatus} → ${newStatus}. ` +
+        `허용된 전이: ${allowed.length > 0 ? allowed.join(', ') : '없음 (최종 상태)'}`,
+      );
+    }
+
+    // 상태 전이 실행
+    const updated = await this.prisma.subscription.update({
+      where: { id: subscriptionId },
+      data: { status: newStatus },
+      include: { plan: true },
+    });
+
+    // 감사 로그 기록 (AdminActivityLog 활용)
+    await this.recordTransitionAudit(
+      subscription.siteId,
+      subscriptionId,
+      currentStatus,
+      newStatus,
+      reason,
+      actorId,
+    );
+
+    this.logger.log(
+      `Subscription ${subscriptionId} (${subscription.site?.name || 'unknown'}): ` +
+      `${currentStatus} → ${newStatus} [${reason}]`,
+    );
+
+    return {
+      subscription: updated,
+      previousStatus: currentStatus,
+      newStatus,
+      message: `구독 상태가 ${currentStatus}에서 ${newStatus}로 변경되었습니다`,
+    };
+  }
+
+  /**
+   * 만료된 체험 구독을 일괄 처리합니다.
+   * TRIAL 상태이고 trialEndsAt이 지난 구독을 EXPIRED로 전이합니다.
+   *
+   * @returns 처리된 구독 수
+   */
+  async checkTrialExpirations(): Promise<{
+    processed: number;
+    expired: string[];
+  }> {
+    const now = new Date();
+
+    const expiredTrials = await this.prisma.subscription.findMany({
+      where: {
+        status: 'TRIAL',
+        trialEndsAt: { lt: now },
+      },
+      include: { site: { select: { name: true } } },
+    });
+
+    const expired: string[] = [];
+
+    for (const trial of expiredTrials) {
+      try {
+        await this.transitionStatus(
+          trial.id,
+          'EXPIRED',
+          '체험 기간 만료 (자동 처리)',
+        );
+        expired.push(
+          `${trial.site?.name || trial.siteId} (${trial.id})`,
+        );
+      } catch (err) {
+        this.logger.error(
+          `체험 만료 처리 실패: ${trial.id} - ${err}`,
+        );
+      }
+    }
+
+    if (expired.length > 0) {
+      this.logger.log(
+        `체험 만료 일괄 처리 완료: ${expired.length}건`,
+      );
+    }
+
+    return { processed: expired.length, expired };
+  }
+
+  /**
+   * PAST_DUE 상태가 유예 기간(30일)을 초과한 구독을 SUSPENDED로 전이합니다.
+   *
+   * @returns 처리된 구독 수
+   */
+  async checkPastDueSuspensions(): Promise<{
+    processed: number;
+    suspended: string[];
+  }> {
+    const now = new Date();
+
+    const pastDueSubscriptions = await this.prisma.subscription.findMany({
+      where: { status: 'PAST_DUE' },
+      include: { site: { select: { name: true } } },
+    });
+
+    const suspended: string[] = [];
+
+    for (const sub of pastDueSubscriptions) {
+      const gracePeriodEnd = new Date(sub.currentPeriodEnd);
+      gracePeriodEnd.setDate(
+        gracePeriodEnd.getDate() + this.SUSPENDED_GRACE_DAYS,
+      );
+
+      if (now > gracePeriodEnd) {
+        try {
+          await this.transitionStatus(
+            sub.id,
+            'SUSPENDED',
+            `미결제 유예기간(${this.SUSPENDED_GRACE_DAYS}일) 초과 (자동 처리)`,
+          );
+          suspended.push(
+            `${sub.site?.name || sub.siteId} (${sub.id})`,
+          );
+        } catch (err) {
+          this.logger.error(
+            `PAST_DUE → SUSPENDED 처리 실패: ${sub.id} - ${err}`,
+          );
+        }
+      }
+    }
+
+    if (suspended.length > 0) {
+      this.logger.log(
+        `PAST_DUE → SUSPENDED 일괄 처리 완료: ${suspended.length}건`,
+      );
+    }
+
+    return { processed: suspended.length, suspended };
+  }
+
+  // ──────────────────────────────────────────────
+  // 감사 로그 기록 (구독 상태 전이)
+  // ──────────────────────────────────────────────
+  private async recordTransitionAudit(
+    siteId: string,
+    subscriptionId: string,
+    fromStatus: string,
+    toStatus: string,
+    reason: string,
+    actorId?: string,
+  ) {
+    try {
+      await this.prisma.adminActivityLog.create({
+        data: {
+          siteId,
+          actorWorkerId: actorId || 'SYSTEM',
+          actionType: 'SUBSCRIPTION_TRANSITION',
+          targetType: 'SUBSCRIPTION',
+          targetId: subscriptionId,
+          metadata: JSON.stringify({
+            fromStatus,
+            toStatus,
+            reason,
+            timestamp: new Date().toISOString(),
+          }),
+        },
+      });
+    } catch (err) {
+      // 감사 로그 실패가 전이 자체를 막지 않도록 함
+      this.logger.error(`구독 전이 감사 로그 기록 실패: ${err}`);
+    }
   }
 }

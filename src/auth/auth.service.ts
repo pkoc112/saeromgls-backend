@@ -10,6 +10,7 @@ import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../prisma/prisma.service';
 import { JwtPayload } from '../common/decorators/current-user.decorator';
 import { RegisterDto } from './dto/register.dto';
+import { encryptWorkerPII, decryptWorkerPII } from '../common/utils/pii.util';
 
 @Injectable()
 export class AuthService {
@@ -68,12 +69,16 @@ export class AuthService {
       }
 
       // 경쟁 조건 방지: email이 null인 경우만 업데이트
+      // Phase 1: phone 암호화 (email 암호화는 검색 인덱스 마이그레이션 후 Phase 2에서 진행)
+      const encryptedPhone = dto.phone
+        ? encryptWorkerPII({ phone: dto.phone }).phone
+        : undefined;
       const result = await this.prisma.worker.updateMany({
         where: { employeeCode: dto.employeeCode, email: null },
         data: {
           email: dto.email,
           passwordHash,
-          ...(dto.phone && { phone: dto.phone }),
+          ...(encryptedPhone && { phone: encryptedPhone }),
         },
       });
       if (result.count === 0) {
@@ -146,11 +151,13 @@ export class AuthService {
     const hashedPin = await bcrypt.hash(randomPin, 10);
 
     // 작업자 생성
+    // Phase 1: phone 암호화 (email 암호화는 검색 인덱스 마이그레이션 후 Phase 2에서 진행)
+    const encryptedData = encryptWorkerPII({ phone: dto.phone });
     const worker = await this.prisma.worker.create({
       data: {
         name: dto.name,
         email: dto.email,
-        phone: dto.phone,
+        phone: encryptedData.phone as string,
         passwordHash,
         employeeCode,
         pin: hashedPin,
@@ -470,7 +477,8 @@ export class AuthService {
       throw new NotFoundException('사용자를 찾을 수 없습니다');
     }
 
-    return worker;
+    // Phase 1: phone 복호화 (암호화되지 않은 기존 데이터도 안전하게 처리)
+    return decryptWorkerPII(worker as Record<string, unknown>) as typeof worker;
   }
 
   // ──────────────────────────────────────────────
@@ -500,7 +508,9 @@ export class AuthService {
     }
 
     if (dto.phone) {
-      updateData.phone = dto.phone;
+      // Phase 1: phone 암호화 (email 암호화는 검색 인덱스 마이그레이션 후 Phase 2에서 진행)
+      const encrypted = encryptWorkerPII({ phone: dto.phone });
+      updateData.phone = encrypted.phone;
     }
 
     // 비밀번호 변경
@@ -545,8 +555,10 @@ export class AuthService {
       },
     });
 
+    // Phase 1: phone 복호화 후 응답
+    const decrypted = decryptWorkerPII(updated as Record<string, unknown>) as typeof updated;
     this.logger.log(`User updated: ${workerId}`);
-    return { message: '정보가 수정되었습니다', user: updated };
+    return { message: '정보가 수정되었습니다', user: decrypted };
   }
 
   // ──────────────────────────────────────────────

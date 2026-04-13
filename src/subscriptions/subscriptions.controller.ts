@@ -3,6 +3,7 @@ import {
   Get,
   Post,
   Body,
+  Param,
   UseGuards,
   BadRequestException,
   ForbiddenException,
@@ -13,7 +14,7 @@ import {
   ApiResponse,
   ApiBearerAuth,
 } from '@nestjs/swagger';
-import { SubscriptionsService } from './subscriptions.service';
+import { SubscriptionsService, SubscriptionStatus } from './subscriptions.service';
 import { UsageLimitService } from './usage-limit.service';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
@@ -27,6 +28,7 @@ import {
   ChangePlanDto,
   SiteIdDto,
   GrantTrialDto,
+  TransitionStatusDto,
 } from './dto/admin-subscription.dto';
 
 @Controller('admin')
@@ -253,5 +255,64 @@ export class SubscriptionsController {
   grantTrial(@CurrentUser() user: JwtPayload, @Body() dto: GrantTrialDto) {
     this.ensureMaster(user);
     return this.subscriptionsService.grantTrial(dto.siteId, dto.days);
+  }
+
+  // ──────────────────────────────────────────────
+  // POST /api/admin/subscriptions/:id/transition — 구독 상태 전이 (MASTER)
+  // ──────────────────────────────────────────────
+  @Post('subscriptions/:id/transition')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('MASTER')
+  @ApiBearerAuth('jwt')
+  @ApiOperation({
+    summary: '구독 상태 전이',
+    description:
+      'MASTER: 구독 상태를 전이합니다. 허용된 전이만 가능합니다. ' +
+      '(TRIAL→ACTIVE, TRIAL→CANCELLED, ACTIVE→PAST_DUE, ACTIVE→CANCELLED, ' +
+      'PAST_DUE→ACTIVE, PAST_DUE→SUSPENDED, SUSPENDED→ACTIVE, SUSPENDED→CANCELLED)',
+  })
+  @ApiResponse({ status: 201, description: '상태 전이 성공' })
+  @ApiResponse({ status: 400, description: '허용되지 않은 상태 전이' })
+  @ApiResponse({ status: 403, description: 'MASTER 권한 필요' })
+  @ApiResponse({ status: 404, description: '구독을 찾을 수 없음' })
+  transitionStatus(
+    @CurrentUser() user: JwtPayload,
+    @Param('id') id: string,
+    @Body() dto: TransitionStatusDto,
+  ) {
+    this.ensureMaster(user);
+    return this.subscriptionsService.transitionStatus(
+      id,
+      dto.status as SubscriptionStatus,
+      dto.reason,
+      user.sub,
+    );
+  }
+
+  // ──────────────────────────────────────────────
+  // POST /api/admin/subscriptions/check-expirations — 만료 체험 일괄 처리 (MASTER)
+  // ──────────────────────────────────────────────
+  @Post('subscriptions/check-expirations')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('MASTER')
+  @ApiBearerAuth('jwt')
+  @ApiOperation({
+    summary: '만료된 체험/구독 일괄 처리',
+    description:
+      'MASTER: 만료된 체험 구독을 EXPIRED로, 유예기간 초과 PAST_DUE를 SUSPENDED로 전이합니다.',
+  })
+  @ApiResponse({ status: 201, description: '일괄 처리 결과' })
+  @ApiResponse({ status: 403, description: 'MASTER 권한 필요' })
+  async checkExpirations(@CurrentUser() user: JwtPayload) {
+    this.ensureMaster(user);
+    const [trialResult, pastDueResult] = await Promise.all([
+      this.subscriptionsService.checkTrialExpirations(),
+      this.subscriptionsService.checkPastDueSuspensions(),
+    ]);
+    return {
+      trials: trialResult,
+      pastDue: pastDueResult,
+      message: `처리 완료: 체험 만료 ${trialResult.processed}건, PAST_DUE → SUSPENDED ${pastDueResult.processed}건`,
+    };
   }
 }
