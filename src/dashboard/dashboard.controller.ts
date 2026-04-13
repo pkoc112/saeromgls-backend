@@ -75,6 +75,22 @@ export class DashboardController {
     res.send(csvContent);
   }
 
+  @Get('worker-stats')
+  @ApiOperation({ summary: '작업자별 통계' })
+  @ApiQuery({ name: 'siteId', required: false, type: String })
+  @ApiQuery({ name: 'from', required: true, type: String })
+  @ApiQuery({ name: 'to', required: true, type: String })
+  getWorkerStats(
+    @Query('from') from: string,
+    @Query('to') to: string,
+    @Query('siteId') querySiteId: string | undefined,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    this.validateDateRange(from, to);
+    const siteId = resolveSiteId(user, querySiteId);
+    return this.dashboardService.getWorkerStats(siteId, from, to);
+  }
+
   @Get('comparison')
   @ApiOperation({ summary: '전기 대비 증감 비교' })
   @ApiQuery({ name: 'from', required: true, type: String })

@@ -134,6 +134,51 @@ export class DashboardService {
   }
 
   /**
+   * 작업자별 통계 (전용 엔드포인트)
+   * 전체 작업자의 작업 건수, 물량, 수량을 반환
+   */
+  async getWorkerStats(siteId: string | undefined, from: string, to: string) {
+    const { fromDate, toDate } = kstDateRange(from, to);
+
+    const dateFilter: Prisma.WorkItemWhereInput = {
+      startedAt: { gte: fromDate, lte: toDate },
+      status: 'ENDED',
+      ...(siteId && { startedByWorker: { OR: [{ siteId }, { siteId: null }] } }),
+    };
+
+    const byWorker = await this.prisma.workItem.groupBy({
+      by: ['startedByWorkerId'],
+      where: dateFilter,
+      _count: true,
+      _sum: { volume: true, quantity: true },
+    });
+
+    // 작업자 이름 조회
+    const workerIds = byWorker.map(w => w.startedByWorkerId);
+    const workers = await this.prisma.worker.findMany({
+      where: { id: { in: workerIds } },
+      select: { id: true, name: true, employeeCode: true },
+    });
+    const workerMap = Object.fromEntries(workers.map(w => [w.id, w]));
+
+    const topWorkers = byWorker
+      .map(w => ({
+        workerId: w.startedByWorkerId,
+        name: workerMap[w.startedByWorkerId]?.name || '-',
+        employeeCode: workerMap[w.startedByWorkerId]?.employeeCode || '-',
+        count: w._count,
+        totalVolume: Number(w._sum.volume ?? 0),
+        totalQuantity: Number(w._sum.quantity ?? 0),
+      }))
+      .sort((a, b) => b.count - a.count);
+
+    return {
+      totalWorkers: topWorkers.length,
+      topWorkers,
+    };
+  }
+
+  /**
    * 트렌드 데이터 (차트용)
    * 일별/주별/월별 그룹핑
    */

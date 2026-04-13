@@ -117,6 +117,18 @@ async function seed() {
     console.log('\n사업장이 없어 siteId 배정을 건너뜁니다');
   }
 
+  // 만료된 리프레시 토큰 정리 (7일 이상)
+  const cleanResult = await runSQL(
+    "DELETE FROM refresh_tokens WHERE expires_at < NOW() - INTERVAL '1 day'"
+  );
+  console.log(`Expired refresh tokens cleaned: ${cleanResult.command || 'ok'}`);
+
+  // 만료된 인증코드 정리
+  const codeClean = await runSQL(
+    "DELETE FROM verification_codes WHERE expires_at < NOW()"
+  );
+  console.log(`Expired verification codes cleaned: ${codeClean.command || 'ok'}`);
+
   // Verify
   const count = await runSQL("SELECT COUNT(*) as cnt FROM workers");
   console.log(`Total workers: ${count.rows[0].cnt}`);
