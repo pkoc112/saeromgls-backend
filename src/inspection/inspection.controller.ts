@@ -11,6 +11,7 @@ import {
   ApiOperation,
   ApiResponse,
   ApiBearerAuth,
+  ApiQuery,
 } from '@nestjs/swagger';
 import { InspectionService } from './inspection.service';
 import { CreateInspectionDto } from './dto/create-inspection.dto';
@@ -43,10 +44,35 @@ export class InspectionController {
     return this.inspectionService.findAll(siteId, query);
   }
 
+  @Get('pending')
+  @Roles('ADMIN', 'SUPERVISOR')
+  @ApiOperation({ summary: '검수 대기 목록 (당일 ENDED 중 미검수)' })
+  @ApiQuery({ name: 'date', required: false, description: 'YYYY-MM-DD (기본: 오늘)' })
+  @ApiQuery({ name: 'siteId', required: false })
+  getPending(
+    @Query('date') date: string | undefined,
+    @Query('siteId') querySiteId: string | undefined,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    const siteId = resolveSiteId(user, querySiteId);
+    return this.inspectionService.getPendingItems(siteId, date);
+  }
+
+  @Post('batch')
+  @Roles('ADMIN', 'SUPERVISOR')
+  @ApiOperation({ summary: '일괄 검수 (전량 PASS + 이슈 개별 마킹)' })
+  batchInspect(
+    @Body() dto: { inspectedByWorkerId: string; date: string; issues?: { workItemId: string; issueType: string; notes?: string }[] },
+    @CurrentUser() user: JwtPayload,
+  ) {
+    const siteId = resolveSiteId(user, undefined) || user.siteId || '';
+    return this.inspectionService.batchInspect(siteId, dto);
+  }
+
   @Post()
   @Roles('ADMIN', 'SUPERVISOR')
   @ApiOperation({
-    summary: '검수 기록 생성',
+    summary: '검수 기록 개별 생성',
     description: '종료된 작업에 대해 검수 기록을 생성합니다.',
   })
   @ApiResponse({ status: 201, description: '검수 기록 생성 완료' })

@@ -17,6 +17,109 @@ export class InspectionService {
   constructor(private readonly prisma: PrismaService) {}
 
   /**
+   * 검수 대기 목록: 당일 ENDED 작업 중 아직 검수되지 않은 항목
+   */
+  async getPendingItems(siteId: string | undefined, date?: string) {
+    const targetDate = date || new Date().toISOString().slice(0, 10);
+    const from = kstStartOfDay(targetDate);
+    const to = kstEndOfDay(targetDate);
+
+    // 해당 날짜 ENDED 작업
+    const where: Prisma.WorkItemWhereInput = {
+      status: 'ENDED',
+      endedAt: { gte: from, lte: to },
+      ...(siteId && { startedByWorker: { OR: [{ siteId }, { siteId: null }] } }),
+    };
+
+    const allEnded = await this.prisma.workItem.findMany({
+      where,
+      select: {
+        id: true,
+        volume: true,
+        quantity: true,
+        startedAt: true,
+        endedAt: true,
+        classification: { select: { id: true, displayName: true } },
+        startedByWorker: { select: { id: true, name: true, employeeCode: true } },
+      },
+      orderBy: { endedAt: 'desc' },
+    });
+
+    // 이미 검수된 workItemId 목록
+    const inspected = await this.prisma.inspectionRecord.findMany({
+      where: {
+        sourceWorkItemId: { in: allEnded.map((w) => w.id) },
+      },
+      select: { sourceWorkItemId: true },
+    });
+    const inspectedIds = new Set(inspected.map((r) => r.sourceWorkItemId));
+
+    // 미검수 항목만 반환
+    const pending = allEnded.filter((w) => !inspectedIds.has(w.id));
+    const done = allEnded.filter((w) => inspectedIds.has(w.id));
+
+    return {
+      date: targetDate,
+      total: allEnded.length,
+      pending: pending.map((w) => ({
+        ...w,
+        volume: Number(w.volume),
+      })),
+      pendingCount: pending.length,
+      doneCount: done.length,
+    };
+  }
+
+  /**
+   * 일괄 검수: 당일 미검수 항목 전량 PASS + 이슈 개별 마킹
+   */
+  async batchInspect(
+    siteId: string,
+    dto: {
+      inspectedByWorkerId: string;
+      date: string;
+      issues?: { workItemId: string; issueType: string; notes?: string }[];
+    },
+  ) {
+    const pending = await this.getPendingItems(siteId, dto.date);
+    if (pending.pendingCount === 0) {
+      return { message: '검수 대기 항목이 없습니다', created: 0 };
+    }
+
+    const issueMap = new Map(
+      (dto.issues || []).map((i) => [i.workItemId, i]),
+    );
+
+    const records = pending.pending.map((item) => {
+      const issue = issueMap.get(item.id);
+      return {
+        siteId,
+        sourceWorkItemId: item.id,
+        inspectedByWorkerId: dto.inspectedByWorkerId,
+        result: issue ? 'ISSUE' : 'PASS',
+        issueType: issue?.issueType || null,
+        quantityChecked: item.quantity,
+        quantityDefect: issue ? item.quantity : 0,
+        notes: issue?.notes || null,
+      };
+    });
+
+    const created = await this.prisma.inspectionRecord.createMany({
+      data: records,
+    });
+
+    this.logger.log(
+      `Batch inspection: ${created.count} items (${dto.issues?.length || 0} issues) by ${dto.inspectedByWorkerId}`,
+    );
+
+    return {
+      created: created.count,
+      passCount: records.filter((r) => r.result === 'PASS').length,
+      issueCount: records.filter((r) => r.result === 'ISSUE').length,
+    };
+  }
+
+  /**
    * 검수 기록 목록 조회 (페이지네이션, 필터)
    */
   async findAll(siteId: string | undefined, params: QueryInspectionDto) {
