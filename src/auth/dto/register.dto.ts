@@ -3,19 +3,27 @@ import { IsString, IsEmail, MinLength, MaxLength, IsBoolean, IsOptional } from '
 
 /**
  * 회원가입 DTO
- * 이메일/비밀번호 기반 사용자 등록
+ * - employeeCode 없이: 신규 작업자 생성 (기존 흐름)
+ * - employeeCode 있으면: 기존 작업자에 이메일/비밀번호 연결
  */
 export class RegisterDto {
   @ApiProperty({
-    description: '이름',
-    example: '홍길동',
-    minLength: 2,
-    maxLength: 50,
+    description: '연결할 사번 (관리자가 사전 등록한 사번)',
+    example: 'WRK115',
+    required: false,
   })
   @IsString()
-  @MinLength(2, { message: '이름은 최소 2자 이상이어야 합니다' })
+  @IsOptional()
+  employeeCode?: string;
+
+  @ApiProperty({
+    description: '이름 (사번 연결 시 생략 가능)',
+    example: '홍길동',
+  })
+  @IsString()
+  @IsOptional()
   @MaxLength(50, { message: '이름은 최대 50자까지 가능합니다' })
-  name: string;
+  name?: string;
 
   @ApiProperty({
     description: '이메일',
@@ -36,19 +44,17 @@ export class RegisterDto {
   password: string;
 
   @ApiProperty({
-    description: '휴대전화 번호',
+    description: '휴대전화 번호 (사번 연결 시 선택)',
     example: '01012345678',
-    minLength: 10,
-    maxLength: 15,
   })
   @IsString()
-  @MinLength(10, { message: '전화번호는 최소 10자리여야 합니다' })
+  @IsOptional()
   @MaxLength(15, { message: '전화번호는 최대 15자리까지 가능합니다' })
-  phone: string;
+  phone?: string;
 
   @ApiProperty({
-    description: '사업장 코드 (미입력 시 DEFAULT)',
-    example: 'DEFAULT',
+    description: '사업장 코드 (사번 연결 시 불필요)',
+    example: '0001',
     required: false,
   })
   @IsString()

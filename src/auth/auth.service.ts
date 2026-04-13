@@ -53,6 +53,79 @@ export class AuthService {
     // 비밀번호 해시
     const passwordHash = await bcrypt.hash(dto.password, 10);
 
+    // ── 분기 A: 사번 연결 모드 (기존 작업자에 이메일 연결) ──
+    if (dto.employeeCode) {
+      const target = await this.prisma.worker.findUnique({
+        where: { employeeCode: dto.employeeCode },
+        include: { site: { select: { name: true } } },
+      });
+      if (!target) {
+        throw new BadRequestException('유효하지 않은 사번입니다');
+      }
+      if (target.email) {
+        throw new BadRequestException('이미 계정이 연결된 사번입니다');
+      }
+
+      // 경쟁 조건 방지: email이 null인 경우만 업데이트
+      const result = await this.prisma.worker.updateMany({
+        where: { employeeCode: dto.employeeCode, email: null },
+        data: {
+          email: dto.email,
+          passwordHash,
+          ...(dto.phone && { phone: dto.phone }),
+        },
+      });
+      if (result.count === 0) {
+        throw new BadRequestException('이미 계정이 연결된 사번입니다');
+      }
+
+      // 업데이트된 워커 조회
+      const worker = await this.prisma.worker.findUnique({
+        where: { employeeCode: dto.employeeCode },
+      });
+
+      // UserConsent 기록
+      await this.prisma.userConsent.createMany({
+        data: [
+          { workerId: worker!.id, consentType: 'TOS', version: '1.0' },
+          { workerId: worker!.id, consentType: 'PRIVACY', version: '1.0' },
+        ],
+      });
+
+      this.logger.log(
+        `Employee linked: ${dto.email} → ${dto.employeeCode} (${target.name}, ${target.role})`,
+      );
+
+      const token = this.generateToken(
+        worker!.id,
+        worker!.role,
+        worker!.employeeCode,
+        worker!.siteId ?? undefined,
+      );
+
+      return {
+        access_token: token.accessToken,
+        refresh_token: token.refreshToken,
+        user: {
+          id: worker!.id,
+          name: worker!.name,
+          email: worker!.email,
+          role: worker!.role.toLowerCase(),
+          siteId: worker!.siteId,
+          siteName: target.site?.name || null,
+          employeeCode: worker!.employeeCode,
+        },
+      };
+    }
+
+    // ── 분기 B: 신규 가입 (기존 흐름) ──
+    if (!dto.name || dto.name.trim().length < 2) {
+      throw new BadRequestException('이름은 최소 2자 이상이어야 합니다');
+    }
+    if (!dto.phone || dto.phone.length < 10) {
+      throw new BadRequestException('전화번호는 최소 10자리여야 합니다');
+    }
+
     // 사업장 매칭 (siteCode)
     let siteId: string | null = null;
     if (dto.siteCode) {
@@ -154,6 +227,14 @@ export class AuthService {
     if (worker.status !== 'ACTIVE') {
       await this.recordLoginHistory(worker.id, false, ipAddress, userAgent);
       throw new UnauthorizedException('비활성화된 계정입니다');
+    }
+
+    // WORKER 역할은 웹 로그인 차단 (모바일 앱 전용)
+    if (worker.role === 'WORKER') {
+      await this.recordLoginHistory(worker.id, false, ipAddress, userAgent);
+      throw new UnauthorizedException(
+        '작업자 계정은 모바일 앱에서만 사용 가능합니다. 웹 접근이 필요하면 관리자에게 역할 변경을 요청하세요.',
+      );
     }
 
     const isValid = await bcrypt.compare(password, worker.passwordHash);
@@ -669,6 +750,36 @@ export class AuthService {
         // Sentry 미설치 또는 미초기화 시 무시
       }
     }
+  }
+
+  // ──────────────────────────────────────────────
+  // 사번 검증 (회원가입 연결용)
+  // ──────────────────────────────────────────────
+  async verifyEmployeeCode(code: string) {
+    const worker = await this.prisma.worker.findUnique({
+      where: { employeeCode: code },
+      select: {
+        name: true,
+        role: true,
+        email: true,
+        site: { select: { name: true } },
+      },
+    });
+
+    if (!worker) {
+      return { valid: false, error: '유효하지 않은 사번입니다' };
+    }
+    if (worker.email) {
+      return { valid: false, name: worker.name, hasEmail: true, error: '이미 계정이 연결된 사번입니다' };
+    }
+
+    return {
+      valid: true,
+      name: worker.name,
+      role: worker.role,
+      siteName: worker.site?.name || '',
+      hasEmail: false,
+    };
   }
 
   // ──────────────────────────────────────────────

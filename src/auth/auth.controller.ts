@@ -60,13 +60,24 @@ export class AuthController {
   }
 
   /**
-   * 회원가입
+   * 사번 검증 (회원가입 연결용, 인증 불필요)
+   */
+  @Get('auth/verify-employee-code/:code')
+  @ApiTags('Auth')
+  @ApiOperation({ summary: '사번 유효성 검증 (회원가입 연결용)' })
+  async verifyEmployeeCode(@Param('code') code: string) {
+    const worker = await this.authService.verifyEmployeeCode(code);
+    return worker;
+  }
+
+  /**
+   * 회원가입 (사번 연결 또는 신규 생성)
    */
   @Post('auth/register')
 
   @HttpCode(HttpStatus.CREATED)
   @ApiTags('Auth')
-  @ApiOperation({ summary: '회원가입' })
+  @ApiOperation({ summary: '회원가입 (사번 연결 시 employeeCode 포함)' })
   @ApiBody({ type: RegisterDto })
   @ApiResponse({ status: 201, description: '회원가입 성공' })
   async register(@Body() dto: RegisterDto) {
