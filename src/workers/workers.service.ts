@@ -49,6 +49,7 @@ export class WorkersService {
           role: true,
           status: true,
           mobileVisible: true,
+          jobTrack: true,
           siteId: true,
           site: { select: { name: true, code: true } },
           createdAt: true,

@@ -102,6 +102,7 @@ model Worker {
   role           String   @default("WORKER")
   status         String   @default("ACTIVE")
   mobileVisible  Boolean  @default(true) @map("mobile_visible")
+  jobTrack       String?  @map("job_track") // OUTBOUND_RANKED, INBOUND_SUPPORT, INSPECTION_GOAL, DOCK_WRAP_GOAL, MANAGER_OPS
   siteId         String?  @map("site_id")
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
