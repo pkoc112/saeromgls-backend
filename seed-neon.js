@@ -93,16 +93,25 @@ async function seed() {
     console.log(`Classification ${code}: ${r.command || r.message || 'ok'}`);
   }
 
-  // ── siteId 미배정 작업자에게 첫 번째 사업장 자동 배정 ──
+  // ── siteId 미배정 데이터에 첫 번째 사업장 자동 배정 ──
   const siteResult = await runSQL("SELECT id, name FROM sites ORDER BY created_at ASC LIMIT 1");
   if (siteResult.rows && siteResult.rows.length > 0) {
     const defaultSiteId = siteResult.rows[0].id;
     const defaultSiteName = siteResult.rows[0].name;
-    const updateResult = await runSQL(
+
+    // 작업자 siteId 배정
+    const workerResult = await runSQL(
       "UPDATE workers SET site_id = $1, updated_at = NOW() WHERE site_id IS NULL",
       [defaultSiteId]
     );
-    console.log(`\nNULL siteId 작업자 → ${defaultSiteName} 배정: ${updateResult.command || 'ok'}`);
+    console.log(`\nNULL siteId 작업자 → ${defaultSiteName} 배정: ${workerResult.command || 'ok'}`);
+
+    // 분류 siteId 배정 (크리티컬: 멀티테넌트 격리)
+    const classResult = await runSQL(
+      "UPDATE classifications SET site_id = $1 WHERE site_id IS NULL",
+      [defaultSiteId]
+    );
+    console.log(`NULL siteId 분류 → ${defaultSiteName} 배정: ${classResult.command || 'ok'}`);
   } else {
     console.log('\n사업장이 없어 siteId 배정을 건너뜁니다');
   }

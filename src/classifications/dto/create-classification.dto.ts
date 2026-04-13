@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsBoolean, IsInt, IsNotEmpty, IsOptional, IsString, Length, Min } from 'class-validator';
+import { IsBoolean, IsInt, IsNotEmpty, IsOptional, IsString, IsUUID, Length, Min } from 'class-validator';
 
 export class CreateClassificationDto {
   @ApiProperty({
@@ -39,4 +39,12 @@ export class CreateClassificationDto {
   @IsBoolean()
   @IsOptional()
   isActive?: boolean;
+
+  @ApiProperty({
+    description: '사업장 ID (MASTER만 지정, ADMIN은 자동)',
+    required: false,
+  })
+  @IsUUID('4')
+  @IsOptional()
+  siteId?: string;
 }
