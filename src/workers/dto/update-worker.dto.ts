@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsIn, IsOptional, IsString, IsUUID, Length } from 'class-validator';
+import { IsBoolean, IsIn, IsOptional, IsString, IsUUID, Length } from 'class-validator';
 
 export class UpdateWorkerDto {
   @ApiProperty({
@@ -57,4 +57,12 @@ export class UpdateWorkerDto {
   @IsUUID('4', { message: '올바른 사업장 ID를 입력해주세요' })
   @IsOptional()
   siteId?: string;
+
+  @ApiProperty({
+    description: '모바일 작업자 선택 화면 노출 여부',
+    required: false,
+  })
+  @IsBoolean()
+  @IsOptional()
+  mobileVisible?: boolean;
 }

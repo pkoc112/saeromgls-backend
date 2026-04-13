@@ -48,6 +48,7 @@ export class WorkersService {
           email: true,
           role: true,
           status: true,
+          mobileVisible: true,
           siteId: true,
           site: { select: { name: true, code: true } },
           createdAt: true,
@@ -78,6 +79,7 @@ export class WorkersService {
     const where: Record<string, unknown> = {
       status: 'ACTIVE',
       role: { notIn: ['MASTER', 'ADMIN'] },
+      mobileVisible: true,
     };
     if (siteId) where.siteId = siteId;
 

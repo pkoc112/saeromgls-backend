@@ -87,6 +87,7 @@ model Worker {
   emailVerified  Boolean  @default(false) @map("email_verified")
   role           String   @default("WORKER")
   status         String   @default("ACTIVE")
+  mobileVisible  Boolean  @default(true) @map("mobile_visible")
   siteId         String?  @map("site_id")
   createdAt      DateTime @default(now()) @map("created_at")
   updatedAt      DateTime @updatedAt @map("updated_at")
