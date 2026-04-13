@@ -38,7 +38,7 @@ async function getApp() {
     app.useGlobalPipes(
       new ValidationPipe({
         whitelist: true,
-        forbidNonWhitelisted: true,
+        forbidNonWhitelisted: false, // _t 등 알 수 없는 파라미터는 조용히 무시
         transform: true,
         transformOptions: { enableImplicitConversion: true },
       }),
