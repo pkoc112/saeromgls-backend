@@ -243,6 +243,7 @@ export class WorkersService {
       this.prisma.userConsent.deleteMany({ where: { workerId: id } }),
       this.prisma.loginHistory.deleteMany({ where: { workerId: id } }),
       this.prisma.adminActivityLog.deleteMany({ where: { actorWorkerId: id } }),
+      this.prisma.auditLog.deleteMany({ where: { actorWorkerId: id } }),
       this.prisma.worker.delete({ where: { id } }),
     ]);
     this.logger.log(`Worker deleted: ${existing.employeeCode}`);
