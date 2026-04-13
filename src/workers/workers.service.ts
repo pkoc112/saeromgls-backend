@@ -238,7 +238,13 @@ export class WorkersService {
       );
     }
 
-    await this.prisma.worker.delete({ where: { id } });
+    // 연관 레코드 먼저 삭제 (외래키 제약)
+    await this.prisma.$transaction([
+      this.prisma.userConsent.deleteMany({ where: { workerId: id } }),
+      this.prisma.loginHistory.deleteMany({ where: { workerId: id } }),
+      this.prisma.adminActivityLog.deleteMany({ where: { workerId: id } }),
+      this.prisma.worker.delete({ where: { id } }),
+    ]);
     this.logger.log(`Worker deleted: ${existing.employeeCode}`);
   }
 }
