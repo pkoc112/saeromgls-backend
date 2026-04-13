@@ -167,7 +167,6 @@ export class InboundService {
    * fileData: 파싱된 엑셀 데이터 (JSON)
    */
   async uploadExcel(siteId: string, fileData: any, approvedByWorkerId: string) {
-    // 엑셀 데이터에서 세션 정보 추출
     const {
       sessionDate,
       shift,
@@ -175,6 +174,8 @@ export class InboundService {
       totalQuantity,
       totalVolume,
       itemCount,
+      expectedQuantity,
+      diffQuantity,
       items,
     } = fileData;
 
@@ -182,22 +183,48 @@ export class InboundService {
       throw new BadRequestException('엑셀 데이터에 입고 날짜가 없습니다');
     }
 
+    const parsedDate = new Date(sessionDate);
+    const dayStart = new Date(parsedDate);
+    dayStart.setHours(0, 0, 0, 0);
+    const dayEnd = new Date(parsedDate);
+    dayEnd.setHours(23, 59, 59, 999);
+
+    // 중복 체크: 같은 날짜 + 공급처 + 수량 → 덮어쓰기
+    const existing = await this.prisma.inboundSession.findFirst({
+      where: {
+        siteId,
+        supplierName: supplierName || null,
+        totalQuantity: Number(totalQuantity) || 0,
+        sessionDate: { gte: dayStart, lte: dayEnd },
+      },
+    });
+
+    if (existing) {
+      // 기존 세션 삭제 (참여자도 cascade 삭제)
+      await this.prisma.inboundSession.delete({ where: { id: existing.id } });
+      this.logger.log(`Duplicate inbound session deleted: ${existing.id} (${supplierName}, ${totalQuantity})`);
+    }
+
     const session = await this.prisma.inboundSession.create({
       data: {
         siteId,
-        sessionDate: new Date(sessionDate),
-        shift: shift || 'AM',
+        sessionDate: parsedDate,
+        shift: shift || 'FULL',
         supplierName: supplierName || null,
         totalQuantity: Number(totalQuantity) || 0,
         totalVolume: Number(totalVolume) || 0,
         itemCount: Number(itemCount) || 0,
+        expectedQuantity: Number(expectedQuantity) || 0,
+        diffQuantity: Number(diffQuantity) || 0,
         rawData: JSON.stringify(items || fileData),
         status: 'PENDING',
-        notes: '엑셀 업로드로 생성',
+        notes: existing ? '엑셀 업로드 (덮어쓰기)' : '엑셀 업로드로 생성',
       },
     });
 
-    this.logger.log(`InboundSession created from Excel: ${session.id}`);
+    this.logger.log(
+      `InboundSession ${existing ? 'overwritten' : 'created'} from Excel: ${session.id} (${supplierName})`,
+    );
     return this.findOneRaw(session.id);
   }
 
