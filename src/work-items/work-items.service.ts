@@ -78,6 +78,7 @@ export class WorkItemsService {
           deviceId: dto.deviceId,
           notes: dto.notes,
           idempotencyKey: dto.idempotencyKey,
+          batchId: dto.batchId || null,
           status: 'ACTIVE',
         },
       });

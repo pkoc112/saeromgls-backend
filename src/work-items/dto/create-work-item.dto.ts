@@ -85,4 +85,12 @@ export class CreateWorkItemDto {
   @IsString()
   @IsOptional()
   idempotencyKey?: string;
+
+  @ApiProperty({
+    description: '배치 ID (멀티 선택 동시 등록 시 동일 값)',
+    required: false,
+  })
+  @IsString()
+  @IsOptional()
+  batchId?: string;
 }
