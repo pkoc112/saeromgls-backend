@@ -196,6 +196,148 @@ ${JSON.stringify(analysisData, null, 2)}
   }
 
   /**
+   * AI 기반 엔터프라이즈 정책 팩 생성
+   * 실제 운영 데이터를 분석하여 최적 가중치를 추천
+   */
+  async generatePolicyPack(siteId: string) {
+    this.ensureClientReady();
+
+    // 운영 데이터 수집
+    const [workers, workItems, inspections, inboundSessions, dockSessions, voidCount, editCount] = await Promise.all([
+      this.prisma.worker.findMany({
+        where: { siteId, status: 'ACTIVE', role: { notIn: ['MASTER', 'ADMIN'] } },
+        select: { id: true, name: true, employeeCode: true, jobTrack: true, role: true },
+      }),
+      this.prisma.workItem.findMany({
+        where: { status: 'ENDED', startedByWorker: { OR: [{ siteId }, { siteId: null }] } },
+        select: { id: true, volume: true, quantity: true, startedAt: true, endedAt: true, startedByWorkerId: true },
+        orderBy: { startedAt: 'desc' },
+        take: 500,
+      }),
+      this.prisma.inspectionRecord.count({ where: { siteId } }),
+      this.prisma.inboundSession.count({ where: { siteId } }),
+      this.prisma.dockSession.count({ where: { siteId } }),
+      this.prisma.workItem.count({ where: { status: 'VOID', startedByWorker: { OR: [{ siteId }, { siteId: null }] } } }),
+      this.prisma.auditLog.count({ where: { action: 'EDIT' } }),
+    ]);
+
+    // 직무 트랙 분포
+    const trackDist: Record<string, number> = {};
+    workers.forEach((w) => { trackDist[w.jobTrack || 'UNASSIGNED'] = (trackDist[w.jobTrack || 'UNASSIGNED'] || 0) + 1; });
+
+    // 작업 통계
+    const totalItems = workItems.length;
+    const avgVolume = totalItems > 0
+      ? Math.round(workItems.reduce((s, w) => s + Number(w.volume), 0) / totalItems * 100) / 100
+      : 0;
+    const avgQuantity = totalItems > 0
+      ? Math.round(workItems.reduce((s, w) => s + w.quantity, 0) / totalItems)
+      : 0;
+    const voidRate = totalItems > 0 ? Math.round(voidCount / (totalItems + voidCount) * 1000) / 10 : 0;
+
+    const dataContext = {
+      siteWorkers: workers.length,
+      trackDistribution: trackDist,
+      totalWorkItems: totalItems,
+      avgVolumePerItem: avgVolume,
+      avgQuantityPerItem: avgQuantity,
+      voidRate: `${voidRate}%`,
+      editCount,
+      inspectionRecords: inspections,
+      inboundSessions: inboundSessions,
+      dockSessions: dockSessions,
+    };
+
+    const prompt = `당신은 물류센터 인센티브 정책 설계 전문가입니다.
+
+아래 운영 데이터를 분석하여 5개 직무 트랙별 최적 인센티브 정책을 설계해주세요.
+
+## 운영 데이터
+${JSON.stringify(dataContext, null, 2)}
+
+## 5개 직무 트랙
+1. OUTBOUND_RANKED (출고 전담) - 상대평가
+2. INBOUND_SUPPORT (입고+출고 혼합) - 세션 기여형
+3. INSPECTION_GOAL (검수 전담) - 절대평가
+4. DOCK_WRAP_GOAL (상하차/랩핑 전담) - 절대평가
+5. MANAGER_OPS (현장 관리자) - 별도 보너스
+
+## 설계 원칙
+- 총점 100점 = 직무성과 + 기록신뢰도 + 팀기여
+- 직무성과: 40~70점 범위
+- 기록신뢰도: 15~30점 범위
+- 팀기여: 10~20점 범위
+- 세 합계는 반드시 100
+- 검수/상하차는 1명이므로 절대평가형
+- 무효화율이 높으면 신뢰도 가중치 높이기
+- 입고 세션이 있으면 입고 트랙 가중치 조정
+- 관리자는 성과보다 운영 품질 중심
+
+## 반드시 아래 JSON 형식으로만 응답 (마크다운 없이):
+{
+  "packName": "팩 이름",
+  "description": "팩 설명 (1줄)",
+  "rationale": "설계 근거 (3줄 이내)",
+  "tracks": [
+    {
+      "track": "OUTBOUND_RANKED",
+      "name": "출고 인센티브 정책",
+      "performance": 60,
+      "reliability": 25,
+      "teamwork": 15,
+      "details": "처리량25 + 효율20 + 난이도15"
+    }
+  ]
+}`;
+
+    const content = await this.callClaude(prompt);
+
+    // JSON 파싱
+    let packData: any;
+    try {
+      // 마크다운 코드블록 제거
+      const cleaned = content.replace(/```json?\n?/g, '').replace(/```/g, '').trim();
+      packData = JSON.parse(cleaned);
+    } catch {
+      this.logger.error('AI 정책 팩 JSON 파싱 실패');
+      throw new Error('AI 응답을 파싱할 수 없습니다');
+    }
+
+    // 정책 생성
+    const created: any[] = [];
+    for (const track of packData.tracks || []) {
+      const weights = JSON.stringify({
+        performance: track.performance,
+        reliability: track.reliability,
+        teamwork: track.teamwork,
+      });
+
+      const policy = await this.prisma.policyVersion.create({
+        data: {
+          siteId,
+          name: track.name,
+          description: `${packData.rationale || ''}\n세부: ${track.details || ''}`,
+          track: track.track,
+          weights,
+          details: track.details || null,
+          status: 'DRAFT',
+        },
+      });
+      created.push(policy);
+    }
+
+    this.logger.log(`AI Policy Pack generated: ${packData.packName} (${created.length} policies)`);
+
+    return {
+      packName: packData.packName,
+      description: packData.description,
+      rationale: packData.rationale,
+      policiesCreated: created.length,
+      policies: created,
+    };
+  }
+
+  /**
    * 납품처 난이도 분석
    * 한달치 작업 데이터를 기반으로 납품처별 난이도를 AI가 평가
    */

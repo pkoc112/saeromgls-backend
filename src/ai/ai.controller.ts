@@ -1,4 +1,4 @@
-import { Controller, Get, Post, Body, Query, UseGuards } from '@nestjs/common';
+import { Controller, Get, Post, Body, Query, UseGuards, BadRequestException } from '@nestjs/common';
 import {
   ApiTags,
   ApiOperation,
@@ -87,10 +87,23 @@ export class AiController {
   @ApiResponse({ status: 201, description: '난이도 분석 완료' })
   analyzeDifficulty(
     @Body() dto: AiAnalysisRequestDto,
-    @CurrentUser() user?: JwtPayload,
+    @CurrentUser() user: JwtPayload,
   ) {
     const siteId = resolveSiteId(user, undefined);
     return this.aiService.analyzeDifficulty(dto.fromDate, dto.toDate, siteId);
+  }
+
+  @Post('generate-policy-pack')
+  @Roles('ADMIN')
+  @ApiOperation({
+    summary: 'AI 엔터프라이즈 정책 팩 생성',
+    description: 'Claude API가 실제 운영 데이터를 분석하여 5개 트랙별 최적 가중치를 추천하고 정책을 자동 생성합니다.',
+  })
+  @ApiResponse({ status: 201, description: '정책 팩 생성 완료' })
+  generatePolicyPack(@CurrentUser() user: JwtPayload) {
+    const siteId = user.siteId;
+    if (!siteId) throw new BadRequestException('사업장 정보가 필요합니다');
+    return this.aiService.generatePolicyPack(siteId);
   }
 
   @Get('insights')
