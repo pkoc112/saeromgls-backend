@@ -149,14 +149,28 @@ export class IncentivesController {
   @Roles('ADMIN')
   @ApiOperation({
     summary: '점수 실행 확정',
-    description: '동결된 점수를 최종 확정합니다.',
+    description: '동결된 점수를 최종 확정합니다. OPEN 이의신청이 있으면 거부됩니다.',
   })
   @ApiParam({ name: 'id', description: '점수 실행 UUID' })
   @ApiResponse({ status: 200, description: '확정 완료' })
-  @ApiResponse({ status: 400, description: '확정 불가 상태' })
+  @ApiResponse({ status: 400, description: '확정 불가 상태 또는 미처리 이의신청 존재' })
   @ApiResponse({ status: 404, description: '점수 실행 없음' })
   finalizeScoreRun(@Param('id', ParseUUIDPipe) id: string) {
     return this.incentivesService.finalizeScoreRun(id);
+  }
+
+  @Post('score-runs/:id/recalculate')
+  @Roles('ADMIN')
+  @ApiOperation({
+    summary: '이의신청 후 재산출',
+    description: '수락된 이의신청을 반영하여 새로운 SHADOW 점수 실행을 생성합니다.',
+  })
+  @ApiParam({ name: 'id', description: '원본 점수 실행 UUID' })
+  @ApiResponse({ status: 201, description: '재산출 완료' })
+  @ApiResponse({ status: 400, description: '수락된 이의신청 없음' })
+  @ApiResponse({ status: 404, description: '점수 실행 없음' })
+  recalculateScoreRun(@Param('id', ParseUUIDPipe) id: string) {
+    return this.incentivesService.recalculateAfterObjection(id);
   }
 
   // ======================== Objections ========================
