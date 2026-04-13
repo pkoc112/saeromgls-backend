@@ -46,6 +46,10 @@ model Site {
   approvalLogs       ApprovalLog[]
   payoutBatches      PayoutBatch[]
   predictionLogs     PredictionLog[]
+  tenantSettings     TenantSettings?
+  onboardingRuns     OnboardingRun[]
+  supportCases       SupportCase[]
+  usageSnapshots     UsageSnapshot[]
 
   @@index([parentSiteId])
   @@map("sites")
@@ -732,4 +736,90 @@ model PredictionLog {
   @@index([predictionType])
   @@index([approvalStatus])
   @@map("prediction_logs")
+}
+
+// ================================================================
+// L5. Customer Operations (Phase 6)
+// ================================================================
+
+/// 테넌트 설정 (고객사별 커스텀 설정)
+model TenantSettings {
+  id        String   @id @default(uuid())
+  siteId    String   @unique @map("site_id")
+  settings  String   // JSON: custom settings per tenant
+  createdAt DateTime @default(now()) @map("created_at")
+  updatedAt DateTime @updatedAt @map("updated_at")
+
+  site Site @relation(fields: [siteId], references: [id])
+
+  @@map("tenant_settings")
+}
+
+/// 사업장 템플릿 (신규 고객 빠른 세팅)
+model SiteTemplate {
+  id                  String   @id @default(uuid())
+  name                String
+  description         String?
+  classificationsJson String   @map("classifications_json") // JSON: default classifications
+  breakConfigsJson    String   @map("break_configs_json") // JSON: default break configs
+  policyPackCode      String?  @map("policy_pack_code")
+  createdAt           DateTime @default(now()) @map("created_at")
+
+  @@map("site_templates")
+}
+
+/// 온보딩 실행 기록
+model OnboardingRun {
+  id          String    @id @default(uuid())
+  siteId      String    @map("site_id")
+  step        Int       @default(1)
+  totalSteps  Int       @default(9) @map("total_steps")
+  status      String    @default("IN_PROGRESS") // IN_PROGRESS, COMPLETED
+  notes       String?
+  startedAt   DateTime  @default(now()) @map("started_at")
+  completedAt DateTime? @map("completed_at")
+
+  site Site @relation(fields: [siteId], references: [id])
+
+  @@index([siteId])
+  @@map("onboarding_runs")
+}
+
+/// 고객 지원 케이스
+model SupportCase {
+  id          String    @id @default(uuid())
+  siteId      String    @map("site_id")
+  reporterId  String?   @map("reporter_id")
+  severity    String    @default("P3") // P1, P2, P3
+  title       String
+  description String?
+  status      String    @default("OPEN") // OPEN, IN_PROGRESS, RESOLVED, CLOSED
+  resolution  String?
+  resolvedAt  DateTime? @map("resolved_at")
+  createdAt   DateTime  @default(now()) @map("created_at")
+
+  site Site @relation(fields: [siteId], references: [id])
+
+  @@index([siteId])
+  @@index([status])
+  @@index([severity])
+  @@map("support_cases")
+}
+
+/// 사용량 스냅샷 (고객별 월간 사용량)
+model UsageSnapshot {
+  id            String   @id @default(uuid())
+  siteId        String   @map("site_id")
+  month         String   // "2026-04"
+  workerCount   Int      @default(0) @map("worker_count")
+  workItemCount Int      @default(0) @map("work_item_count")
+  totalVolume   Decimal  @default(0) @db.Decimal(12, 2) @map("total_volume")
+  totalQuantity Int      @default(0) @map("total_quantity")
+  createdAt     DateTime @default(now()) @map("created_at")
+
+  site Site @relation(fields: [siteId], references: [id])
+
+  @@unique([siteId, month])
+  @@index([siteId])
+  @@map("usage_snapshots")
 }
