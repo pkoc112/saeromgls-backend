@@ -18,7 +18,7 @@ export class DashboardService {
 
     const dateFilter: Prisma.WorkItemWhereInput = {
       startedAt: { gte: fromDate, lte: toDate },
-      ...(siteId && { startedByWorker: { siteId } }),
+      ...(siteId && { startedByWorker: { OR: [{ siteId }, { siteId: null }] } }),
     };
 
     // 전체 건수 (상태별) — groupBy 1회 쿼리로 집계
@@ -209,7 +209,7 @@ export class DashboardService {
     const items = await this.prisma.workItem.findMany({
       where: {
         startedAt: { gte: fromDate, lte: toDate },
-        ...(siteId && { startedByWorker: { siteId } }),
+        ...(siteId && { startedByWorker: { OR: [{ siteId }, { siteId: null }] } }),
       },
       include: {
         classification: { select: { code: true, displayName: true } },
@@ -315,7 +315,7 @@ export class DashboardService {
     const buildFilter = (f: Date, t: Date): Prisma.WorkItemWhereInput => ({
       startedAt: { gte: f, lte: t },
       status: 'ENDED',
-      ...(siteId && { startedByWorker: { siteId } }),
+      ...(siteId && { startedByWorker: { OR: [{ siteId }, { siteId: null }] } }),
     });
 
     const [current, previous] = await Promise.all([
@@ -360,7 +360,7 @@ export class DashboardService {
 
     const baseFilter: Prisma.WorkItemWhereInput = {
       startedAt: { gte: fromDate, lte: toDate },
-      ...(siteId && { startedByWorker: { siteId } }),
+      ...(siteId && { startedByWorker: { OR: [{ siteId }, { siteId: null }] } }),
     };
 
     const alerts: { type: string; severity: string; message: string; count: number }[] = [];

@@ -93,9 +93,23 @@ async function seed() {
     console.log(`Classification ${code}: ${r.command || r.message || 'ok'}`);
   }
 
+  // ── siteId 미배정 작업자에게 첫 번째 사업장 자동 배정 ──
+  const siteResult = await runSQL("SELECT id, name FROM sites ORDER BY created_at ASC LIMIT 1");
+  if (siteResult.rows && siteResult.rows.length > 0) {
+    const defaultSiteId = siteResult.rows[0].id;
+    const defaultSiteName = siteResult.rows[0].name;
+    const updateResult = await runSQL(
+      "UPDATE workers SET site_id = $1, updated_at = NOW() WHERE site_id IS NULL",
+      [defaultSiteId]
+    );
+    console.log(`\nNULL siteId 작업자 → ${defaultSiteName} 배정: ${updateResult.command || 'ok'}`);
+  } else {
+    console.log('\n사업장이 없어 siteId 배정을 건너뜁니다');
+  }
+
   // Verify
   const count = await runSQL("SELECT COUNT(*) as cnt FROM workers");
-  console.log(`\nTotal workers: ${count.rows[0].cnt}`);
+  console.log(`Total workers: ${count.rows[0].cnt}`);
 }
 
 seed().catch(e => console.error(e));

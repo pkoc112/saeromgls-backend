@@ -368,9 +368,15 @@ export class WorkItemsService {
 
     const where: Prisma.WorkItemWhereInput = {};
 
-    // ★ siteId 격리: 해당 사업장 작업자의 작업만 조회
+    // ★ siteId 격리: 해당 사업장 작업자 + siteId 미배정 작업자 모두 포함
+    // (기존 작업자가 siteId=NULL일 수 있으므로 NULL도 포함)
     if (siteId) {
-      where.startedByWorker = { siteId };
+      where.startedByWorker = {
+        OR: [
+          { siteId },
+          { siteId: null },
+        ],
+      };
     }
 
     if (query.status) {

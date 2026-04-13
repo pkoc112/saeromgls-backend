@@ -188,7 +188,7 @@ export class PerformanceService {
     const dateFilter: Prisma.WorkItemWhereInput = {
       startedAt: { gte: fromDate, lte: toDate },
       status: 'ENDED',
-      ...(siteId && { startedByWorker: { siteId } }),
+      ...(siteId && { startedByWorker: { OR: [{ siteId }, { siteId: null }] } }),
     };
 
     const aggregates = await this.prisma.workItem.aggregate({
