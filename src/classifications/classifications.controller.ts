@@ -50,7 +50,7 @@ export class ClassificationsController {
 
   @Post('admin/classifications')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('ADMIN')
+  @Roles('ADMIN', 'SUPERVISOR')
   @ApiBearerAuth('jwt')
   @ApiTags('Admin Classifications')
   @ApiOperation({ summary: '분류 생성 (사업장 자동 배정)' })
@@ -60,7 +60,7 @@ export class ClassificationsController {
     @CurrentUser() user: JwtPayload,
     @Body() dto: CreateClassificationDto,
   ) {
-    // ADMIN: 자기 사업장 자동 배정, MASTER: dto.siteId 사용 가능
+    // ADMIN/SUPERVISOR: 자기 사업장 자동 배정, MASTER: dto.siteId 사용 가능
     const siteId = user.role === 'MASTER'
       ? (dto.siteId || undefined)
       : user.siteId;
@@ -69,7 +69,7 @@ export class ClassificationsController {
 
   @Patch('admin/classifications/:id')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('ADMIN')
+  @Roles('ADMIN', 'SUPERVISOR')
   @ApiBearerAuth('jwt')
   @ApiTags('Admin Classifications')
   @ApiOperation({ summary: '분류 수정 (관리자 전용)' })
