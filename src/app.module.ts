@@ -20,6 +20,7 @@ import { InspectionModule } from './inspection/inspection.module';
 import { InboundModule } from './inbound/inbound.module';
 import { DockModule } from './dock/dock.module';
 import { IncentivesModule } from './incentives/incentives.module';
+import { MlGovernanceModule } from './ml-governance/ml-governance.module';
 
 @Module({
   imports: [
@@ -43,6 +44,7 @@ import { IncentivesModule } from './incentives/incentives.module';
     InboundModule,
     DockModule,
     IncentivesModule,
+    MlGovernanceModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })

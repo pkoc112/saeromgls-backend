@@ -338,6 +338,26 @@ CBM당 소요시간 기준으로 가장 효율적인/비효율적인 납품처 T
       },
     });
 
+    // ML Governance: 예측 로그 생성 (승인 워크플로우 연결)
+    try {
+      await this.prisma.predictionLog.create({
+        data: {
+          siteId: siteId || '',
+          modelVersion: 'claude-opus-4-6',
+          predictionType: 'DIFFICULTY',
+          inputSnapshot: JSON.stringify(destStats),
+          output: content,
+          approvalStatus: 'PENDING',
+          expiresAt: new Date(Date.now() + 30 * 24 * 3600 * 1000), // 30 days
+        },
+      });
+      this.logger.log('난이도 분석 예측 로그 생성 완료 (승인 대기)');
+    } catch (error: unknown) {
+      // 예측 로그 생성 실패가 인사이트 반환을 막지 않도록 함
+      const errMsg = error instanceof Error ? error.message : String(error);
+      this.logger.error(`예측 로그 생성 실패: ${errMsg}`);
+    }
+
     return insight;
   }
 

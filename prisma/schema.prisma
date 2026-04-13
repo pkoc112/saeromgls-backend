@@ -45,6 +45,7 @@ model Site {
   objectionCases     ObjectionCase[]
   approvalLogs       ApprovalLog[]
   payoutBatches      PayoutBatch[]
+  predictionLogs     PredictionLog[]
 
   @@index([parentSiteId])
   @@map("sites")
@@ -691,4 +692,31 @@ model PayoutBatch {
   @@index([month])
   @@index([status])
   @@map("payout_batches")
+}
+
+// ================================================================
+// L4. ML Data Foundation
+// ================================================================
+
+/// ML 추천/예측 로그
+model PredictionLog {
+  id              String   @id @default(uuid())
+  siteId          String   @map("site_id")
+  modelVersion    String   @map("model_version")
+  predictionType  String   @map("prediction_type") // DIFFICULTY, ANOMALY, WORKLOAD, SIMULATION
+  inputSnapshot   String   @map("input_snapshot") // JSON
+  output          String   // JSON
+  confidence      Decimal? @db.Decimal(5, 4)
+  approvedBy      String?  @map("approved_by")
+  approvalStatus  String   @default("PENDING") @map("approval_status") // PENDING, APPROVED, REJECTED
+  approvedAt      DateTime? @map("approved_at")
+  expiresAt       DateTime? @map("expires_at")
+  createdAt       DateTime @default(now()) @map("created_at")
+
+  site Site @relation(fields: [siteId], references: [id])
+
+  @@index([siteId])
+  @@index([predictionType])
+  @@index([approvalStatus])
+  @@map("prediction_logs")
 }
