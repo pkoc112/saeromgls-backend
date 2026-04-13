@@ -269,6 +269,29 @@ export class AuthService {
         secret: refreshSecret || 'fallback-secret-for-dev',
       });
 
+      // DB에서 토큰 유효성 확인 (순환 + 재사용 차단)
+      const storedToken = await this.prisma.refreshToken.findUnique({
+        where: { token: refreshToken },
+      });
+
+      if (storedToken?.revokedAt) {
+        // 이미 사용된 토큰 재사용 시도 → 해당 패밀리 전체 무효화 (탈취 의심)
+        await this.prisma.refreshToken.updateMany({
+          where: { family: storedToken.family },
+          data: { revokedAt: new Date() },
+        });
+        this.logger.warn(`Refresh token replay detected! Family ${storedToken.family} revoked.`);
+        throw new UnauthorizedException('보안 위협이 감지되었습니다. 다시 로그인해주세요.');
+      }
+
+      // 현재 토큰 사용 처리 (revoke)
+      if (storedToken) {
+        await this.prisma.refreshToken.update({
+          where: { id: storedToken.id },
+          data: { revokedAt: new Date() },
+        });
+      }
+
       const worker = await this.prisma.worker.findUnique({
         where: { id: payload.sub },
         select: {
@@ -291,11 +314,22 @@ export class AuthService {
         worker.siteId ?? undefined,
       );
 
+      // 새 토큰에 같은 family 부여 (토큰 체인 추적)
+      if (storedToken) {
+        await this.prisma.refreshToken.updateMany({
+          where: { token: token.refreshToken },
+          data: { family: storedToken.family },
+        });
+      }
+
       return {
         access_token: token.accessToken,
         refresh_token: token.refreshToken,
+        accessToken: token.accessToken,
+        refreshToken: token.refreshToken,
       };
-    } catch {
+    } catch (err) {
+      if (err instanceof UnauthorizedException) throw err;
       throw new UnauthorizedException(
         '리프레시 토큰이 만료되었거나 유효하지 않습니다',
       );
@@ -715,16 +749,20 @@ export class AuthService {
     if (!refreshSecret && process.env.NODE_ENV === 'production') {
       throw new Error('JWT_REFRESH_SECRET 또는 JWT_SECRET 환경변수가 필요합니다');
     }
-    if (!refreshSecret) {
-      this.logger.warn('JWT_REFRESH_SECRET/JWT_SECRET 환경변수 미설정 — 개발용 fallback 사용 중');
-    } else if (!process.env.JWT_REFRESH_SECRET) {
-      this.logger.warn('JWT_REFRESH_SECRET 미설정 — JWT_SECRET을 refresh 토큰에도 공유 사용 중');
-    }
 
     const refreshToken = this.jwtService.sign(payload, {
       secret: refreshSecret || 'fallback-secret-for-dev',
       expiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '7d',
     });
+
+    // DB에 리프레시 토큰 저장 (비동기, 로그인 응답 지연 방지)
+    this.prisma.refreshToken.create({
+      data: {
+        token: refreshToken,
+        workerId,
+        expiresAt: new Date(Date.now() + 7 * 24 * 3600 * 1000),
+      },
+    }).catch((err) => this.logger.error('RefreshToken save failed', err));
 
     return {
       accessToken,

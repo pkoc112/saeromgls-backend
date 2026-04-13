@@ -101,6 +101,7 @@ model Worker {
   loginHistory     LoginHistory[]
   activityLogs     AdminActivityLog[]
   restoreRequests  RestoreRequest[]
+  refreshTokens    RefreshToken[]
 
   @@index([siteId])
   @@index([status, role])
@@ -329,6 +330,24 @@ model AdminActivityLog {
   @@index([createdAt])
   @@index([siteId, createdAt])
   @@map("admin_activity_logs")
+}
+
+/// 리프레시 토큰 (순환 + 재사용 차단)
+model RefreshToken {
+  id        String   @id @default(uuid())
+  token     String   @unique
+  workerId  String   @map("worker_id")
+  family    String   @default(uuid())
+  expiresAt DateTime @map("expires_at")
+  revokedAt DateTime? @map("revoked_at")
+  createdAt DateTime @default(now()) @map("created_at")
+
+  worker Worker @relation(fields: [workerId], references: [id])
+
+  @@index([workerId])
+  @@index([token])
+  @@index([family])
+  @@map("refresh_tokens")
 }
 
 /// 이메일 인증 코드 (서버리스 호환 - DB 저장)
