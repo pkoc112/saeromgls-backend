@@ -1260,4 +1260,134 @@ export class IncentivesService {
     this.logger.log(`Objection ${id} resolved: ${newStatus}`);
     return updated;
   }
+
+  // ======================== Policy Pack Templates ========================
+
+  /**
+   * 정책 팩 템플릿 목록 조회
+   */
+  async getPolicyPackTemplates() {
+    const templates = await this.prisma.policyPackTemplate.findMany({
+      orderBy: { createdAt: 'asc' },
+    });
+    return {
+      data: templates.map((t) => ({
+        ...t,
+        tracks: typeof t.tracks === 'string' ? JSON.parse(t.tracks) : t.tracks,
+      })),
+    };
+  }
+
+  /**
+   * 정책 팩 적용 - 팩의 모든 트랙에 대해 PolicyVersion을 생성
+   */
+  async applyPolicyPack(templateId: string, siteId: string) {
+    const template = await this.prisma.policyPackTemplate.findUnique({
+      where: { id: templateId },
+    });
+    if (!template) {
+      throw new NotFoundException('정책 팩 템플릿을 찾을 수 없습니다');
+    }
+
+    const trackConfigs = typeof template.tracks === 'string'
+      ? JSON.parse(template.tracks)
+      : template.tracks;
+
+    if (!Array.isArray(trackConfigs) || trackConfigs.length === 0) {
+      throw new BadRequestException('정책 팩에 트랙 설정이 없습니다');
+    }
+
+    // 기존 ACTIVE/SHADOW 정책들을 RETIRED로 전환
+    await this.prisma.policyVersion.updateMany({
+      where: {
+        siteId,
+        status: { in: ['ACTIVE', 'SHADOW'] },
+      },
+      data: {
+        status: 'RETIRED',
+        effectiveTo: new Date(),
+      },
+    });
+
+    const created: unknown[] = [];
+    for (const cfg of trackConfigs) {
+      const pv = await this.prisma.policyVersion.create({
+        data: {
+          siteId,
+          name: `[${template.name}] ${cfg.name || cfg.track}`,
+          description: `정책 팩 "${template.name}"에서 자동 생성됨`,
+          track: cfg.track,
+          weights: JSON.stringify(cfg.weights),
+          status: 'SHADOW',
+          effectiveFrom: new Date(),
+        },
+      });
+      created.push(pv);
+    }
+
+    this.logger.log(
+      `PolicyPack ${template.code} applied to site ${siteId}: ${created.length} policies created`,
+    );
+
+    return {
+      message: `정책 팩 "${template.name}"이(가) 적용되었습니다. ${created.length}개 트랙 정책이 SHADOW 상태로 생성되었습니다.`,
+      policies: created,
+    };
+  }
+
+  // ======================== Payout Dry-run ========================
+
+  /**
+   * 지급 시뮬레이션 (Dry-run)
+   * scoreRunId의 모든 점수 엔트리를 기반으로 예상 지급액을 계산
+   */
+  async generatePayoutDryRun(scoreRunId: string, baseIncentive: number = 500000) {
+    const run = await this.prisma.scoreRun.findUnique({
+      where: { id: scoreRunId },
+      include: {
+        policyVersion: { select: { id: true, name: true, track: true, weights: true } },
+        entries: {
+          include: {
+            worker: { select: { id: true, name: true, employeeCode: true } },
+          },
+          orderBy: { totalScore: 'desc' },
+        },
+      },
+    });
+
+    if (!run) {
+      throw new NotFoundException('점수 실행을 찾을 수 없습니다');
+    }
+
+    const payoutData = run.entries.map((entry) => {
+      const totalScore = Number(entry.totalScore) || 0;
+      const estimatedPayout = Math.round(baseIncentive * (totalScore / 100));
+      return {
+        workerId: entry.worker.id,
+        workerName: entry.worker.name,
+        employeeCode: entry.worker.employeeCode,
+        track: entry.track,
+        performanceScore: Number(entry.performanceScore) || 0,
+        reliabilityScore: Number(entry.reliabilityScore) || 0,
+        teamworkScore: Number(entry.teamworkScore) || 0,
+        totalScore,
+        rank: entry.rank,
+        estimatedPayout,
+      };
+    });
+
+    const totalPayout = payoutData.reduce((sum, p) => sum + p.estimatedPayout, 0);
+
+    return {
+      scoreRunId: run.id,
+      month: run.month,
+      status: run.status,
+      policyName: run.policyVersion?.name || '-',
+      track: run.policyVersion?.track || '-',
+      baseIncentive,
+      totalPayout,
+      workerCount: payoutData.length,
+      data: payoutData,
+    };
+  }
 }

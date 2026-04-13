@@ -698,6 +698,19 @@ model PayoutBatch {
 // L4. ML Data Foundation
 // ================================================================
 
+/// 정책 팩 템플릿
+model PolicyPackTemplate {
+  id          String   @id @default(uuid())
+  code        String   @unique
+  name        String
+  description String?
+  tracks      String   // JSON array of track configs
+  isDefault   Boolean  @default(false) @map("is_default")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@map("policy_pack_templates")
+}
+
 /// ML 추천/예측 로그
 model PredictionLog {
   id              String   @id @default(uuid())

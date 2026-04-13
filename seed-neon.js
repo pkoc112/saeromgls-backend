@@ -117,6 +117,50 @@ async function seed() {
     console.log('\n사업장이 없어 siteId 배정을 건너뜁니다');
   }
 
+  // ── 정책 팩 템플릿 시드 ──────────────────────────────────────────────────
+  const policyPacks = [
+    [
+      'QTY_ONLY_OUTBOUND',
+      '수량 중심 출고형',
+      '출고 수량/순위 기반 성과 평가에 최적화된 정책 팩입니다. 출고 전문 물류센터에 적합합니다.',
+      JSON.stringify([
+        { track: 'OUTBOUND_RANKED', name: '출고 순위형', weights: { performance: 60, reliability: 25, teamwork: 15 } }
+      ]),
+      false
+    ],
+    [
+      'HYBRID_INBOUND_OUTBOUND',
+      '입고+출고 혼합형',
+      '입고와 출고 작업을 모두 수행하는 물류센터에 적합한 정책 팩입니다.',
+      JSON.stringify([
+        { track: 'OUTBOUND_RANKED', name: '출고 순위형', weights: { performance: 55, reliability: 25, teamwork: 20 } },
+        { track: 'INBOUND_SUPPORT', name: '입고 지원형', weights: { performance: 40, reliability: 35, teamwork: 25 } }
+      ]),
+      true
+    ],
+    [
+      'INSPECTION_DOCK_SUPPORT',
+      '검수/상하차 보조형',
+      '출고, 입고, 검수, 상하차, 관리 등 전체 직무를 운영하는 대형 물류센터에 적합합니다.',
+      JSON.stringify([
+        { track: 'OUTBOUND_RANKED', name: '출고 순위형', weights: { performance: 55, reliability: 25, teamwork: 20 } },
+        { track: 'INBOUND_SUPPORT', name: '입고 지원형', weights: { performance: 40, reliability: 35, teamwork: 25 } },
+        { track: 'INSPECTION_GOAL', name: '검수 목표형', weights: { performance: 50, reliability: 30, teamwork: 20 } },
+        { track: 'DOCK_WRAP_GOAL', name: '상하차 목표형', weights: { performance: 45, reliability: 30, teamwork: 25 } },
+        { track: 'MANAGER_OPS', name: '관리자 운영형', weights: { performance: 35, reliability: 35, teamwork: 30 } }
+      ]),
+      false
+    ],
+  ];
+
+  for (const [code, name, description, tracks, isDefault] of policyPacks) {
+    const r = await runSQL(
+      "INSERT INTO policy_pack_templates (id, code, name, description, tracks, is_default, created_at) VALUES (gen_random_uuid(), $1, $2, $3, $4, $5, NOW()) ON CONFLICT (code) DO UPDATE SET name=$2, description=$3, tracks=$4, is_default=$5",
+      [code, name, description, tracks, isDefault]
+    );
+    console.log(`PolicyPack ${code}: ${r.command || r.message || 'ok'}`);
+  }
+
   // 만료된 리프레시 토큰 정리 (7일 이상)
   const cleanResult = await runSQL(
     "DELETE FROM refresh_tokens WHERE expires_at < NOW() - INTERVAL '1 day'"

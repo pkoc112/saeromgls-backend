@@ -223,4 +223,53 @@ export class IncentivesController {
   ) {
     return this.incentivesService.resolveObjection(id, resolution, user.sub);
   }
+
+  // ======================== Policy Pack Templates ========================
+
+  @Get('policy-packs')
+  @Roles('ADMIN')
+  @ApiOperation({
+    summary: '정책 팩 템플릿 목록 조회',
+    description: '사전 정의된 정책 팩 템플릿 목록을 조회합니다.',
+  })
+  @ApiResponse({ status: 200, description: '정책 팩 목록' })
+  getPolicyPacks() {
+    return this.incentivesService.getPolicyPackTemplates();
+  }
+
+  @Post('policy-packs/:id/apply')
+  @Roles('ADMIN')
+  @ApiOperation({
+    summary: '정책 팩 적용',
+    description: '정책 팩 템플릿을 현재 사업장에 적용합니다. 기존 ACTIVE/SHADOW 정책은 RETIRED됩니다.',
+  })
+  @ApiParam({ name: 'id', description: '정책 팩 템플릿 UUID' })
+  @ApiResponse({ status: 201, description: '정책 팩 적용 완료' })
+  @ApiResponse({ status: 404, description: '정책 팩 없음' })
+  applyPolicyPack(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    const siteId = resolveSiteId(user, undefined) || '';
+    return this.incentivesService.applyPolicyPack(id, siteId);
+  }
+
+  // ======================== Payout Preview ========================
+
+  @Get('score-runs/:id/payout-preview')
+  @Roles('ADMIN')
+  @ApiOperation({
+    summary: '지급 시뮬레이션 (Dry-run)',
+    description: '점수 실행을 기반으로 예상 지급액을 계산합니다.',
+  })
+  @ApiParam({ name: 'id', description: '점수 실행 UUID' })
+  @ApiResponse({ status: 200, description: '지급 시뮬레이션 결과' })
+  @ApiResponse({ status: 404, description: '점수 실행 없음' })
+  getPayoutPreview(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query('baseIncentive') baseIncentiveStr?: string,
+  ) {
+    const baseIncentive = baseIncentiveStr ? Number(baseIncentiveStr) : 500000;
+    return this.incentivesService.generatePayoutDryRun(id, baseIncentive);
+  }
 }
