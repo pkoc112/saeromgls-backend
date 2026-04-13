@@ -103,6 +103,7 @@ model Worker {
   restoreRequests  RestoreRequest[]
 
   @@index([siteId])
+  @@index([status, role])
   @@map("workers")
 }
 
@@ -264,6 +265,7 @@ model LoginHistory {
 
   @@index([workerId])
   @@index([createdAt])
+  @@index([workerId, createdAt])
   @@map("login_history")
 }
 

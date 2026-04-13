@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsDateString, IsIn, IsOptional, IsString, IsInt, Min } from 'class-validator';
+import { IsDateString, IsIn, IsOptional, IsString, IsInt, Min, Max } from 'class-validator';
 
 /**
  * 관리자 작업 목록 조회 쿼리 DTO
@@ -23,6 +23,7 @@ export class QueryWorkItemsDto {
   })
   @IsInt()
   @Min(1)
+  @Max(200, { message: '한 번에 최대 200건까지 조회 가능합니다' })
   @IsOptional()
   limit?: number;
 

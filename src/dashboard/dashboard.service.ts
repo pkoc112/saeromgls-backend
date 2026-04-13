@@ -206,6 +206,7 @@ export class DashboardService {
   async exportCsv(from: string, to: string, siteId?: string): Promise<string> {
     const { fromDate, toDate } = kstDateRange(from, to);
 
+    const MAX_CSV_ROWS = 10000;
     const items = await this.prisma.workItem.findMany({
       where: {
         startedAt: { gte: fromDate, lte: toDate },
@@ -220,6 +221,7 @@ export class DashboardService {
         },
       },
       orderBy: { startedAt: 'asc' },
+      take: MAX_CSV_ROWS,
     });
 
     // CSV 헤더 (한글)

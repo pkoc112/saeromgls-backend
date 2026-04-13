@@ -164,6 +164,7 @@ export class WorkItemsService {
         },
       },
       orderBy: { startedAt: 'desc' },
+      take: 200, // 무제한 방지
     });
   }
 
