@@ -498,6 +498,19 @@ export class WorkItemsService {
     if (dto.notes !== undefined) {
       updateData.notes = dto.notes;
     }
+    // ★ 작업 시간 수정 (관리자 전용)
+    if (dto.startedAt !== undefined) {
+      updateData.startedAt = new Date(dto.startedAt);
+    }
+    if (dto.endedAt !== undefined) {
+      updateData.endedAt = new Date(dto.endedAt);
+    }
+    // 시작 > 종료 검증
+    if (dto.startedAt && dto.endedAt) {
+      if (new Date(dto.startedAt) > new Date(dto.endedAt)) {
+        throw new BadRequestException('시작 시간이 종료 시간보다 늦을 수 없습니다');
+      }
+    }
 
     const updated = await this.prisma.$transaction(async (tx) => {
       const item = await tx.workItem.update({

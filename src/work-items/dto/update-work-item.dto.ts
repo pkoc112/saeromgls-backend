@@ -6,6 +6,7 @@ import {
   IsUUID,
   IsNumber,
   IsInt,
+  IsDateString,
   Min,
 } from 'class-validator';
 
@@ -49,6 +50,24 @@ export class UpdateWorkItemDto {
   @IsString()
   @IsOptional()
   notes?: string;
+
+  @ApiProperty({
+    description: '작업 시작 시간 (ISO 8601)',
+    example: '2026-04-10T17:00:00+09:00',
+    required: false,
+  })
+  @IsDateString({}, { message: '올바른 날짜 형식이 아닙니다 (ISO 8601)' })
+  @IsOptional()
+  startedAt?: string;
+
+  @ApiProperty({
+    description: '작업 종료 시간 (ISO 8601)',
+    example: '2026-04-10T18:30:00+09:00',
+    required: false,
+  })
+  @IsDateString({}, { message: '올바른 날짜 형식이 아닙니다 (ISO 8601)' })
+  @IsOptional()
+  endedAt?: string;
 
   @ApiProperty({
     description: '수정 사유 (필수)',
