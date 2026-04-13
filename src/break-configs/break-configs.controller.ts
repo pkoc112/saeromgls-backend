@@ -26,6 +26,8 @@ import { UpdateBreakConfigDto } from './dto/update-break-config.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
+import { CurrentUser, JwtPayload } from '../common/decorators/current-user.decorator';
+import { resolveSiteId } from '../common/utils/site-scope';
 
 @Controller()
 export class BreakConfigsController {
@@ -46,7 +48,11 @@ export class BreakConfigsController {
     description: '현장 ID (없으면 전역 설정)',
   })
   @ApiResponse({ status: 200, description: '휴게시간 설정 목록' })
-  findAll(@Query('siteId') siteId?: string) {
+  findAll(
+    @CurrentUser() user: JwtPayload,
+    @Query('siteId') querySiteId?: string,
+  ) {
+    const siteId = resolveSiteId(user, querySiteId);
     return this.breakConfigsService.findAll(siteId);
   }
 
@@ -59,7 +65,14 @@ export class BreakConfigsController {
   @ApiResponse({ status: 201, description: '휴게시간 설정 생성 완료' })
   @ApiResponse({ status: 400, description: '유효성 검사 실패' })
   @ApiResponse({ status: 409, description: '시간 겹침' })
-  create(@Body() dto: CreateBreakConfigDto) {
+  create(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: CreateBreakConfigDto,
+  ) {
+    // ADMIN: 자기 사업장 자동 배정
+    if (user.role !== 'MASTER' && user.siteId) {
+      dto.siteId = user.siteId;
+    }
     return this.breakConfigsService.create(dto);
   }
 
@@ -101,11 +114,12 @@ export class BreakConfigsController {
   @Get('mobile/break-configs')
   @ApiTags('Mobile BreakConfigs')
   @ApiOperation({
-    summary: '전역 휴게시간 목록 (모바일)',
-    description: '인증 불필요. 모바일 앱에서 휴게시간 표시용.',
+    summary: '휴게시간 목록 (모바일, 사업장 격리)',
+    description: '인증 불필요. siteId로 해당 사업장 휴게시간만 반환.',
   })
+  @ApiQuery({ name: 'siteId', required: false })
   @ApiResponse({ status: 200, description: '활성 휴게시간 목록 (간소화)' })
-  findForMobile() {
-    return this.breakConfigsService.findForMobile();
+  findForMobile(@Query('siteId') siteId?: string) {
+    return this.breakConfigsService.findForMobile(siteId);
   }
 }

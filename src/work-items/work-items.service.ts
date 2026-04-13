@@ -130,7 +130,7 @@ export class WorkItemsService {
    * status 파라미터로 쉼표 구분 다중 상태 필터 가능 (예: "ACTIVE,PAUSED")
    * 기본값은 ACTIVE
    */
-  async findActiveForMobile(workerId?: string, statusFilter?: string) {
+  async findActiveForMobile(workerId?: string, statusFilter?: string, siteId?: string) {
     const statuses = statusFilter
       ? statusFilter.split(',').map((s) => s.trim().toUpperCase())
       : ['ACTIVE'];
@@ -138,6 +138,13 @@ export class WorkItemsService {
     const where: Prisma.WorkItemWhereInput = {
       status: statuses.length === 1 ? statuses[0] : { in: statuses },
     };
+
+    // ★ 사업장 격리: 해당 사업장 작업자 + siteId NULL 작업자
+    if (siteId) {
+      where.startedByWorker = {
+        OR: [{ siteId }, { siteId: null }],
+      };
+    }
 
     // 특정 작업자의 작업만 필터
     if (workerId) {

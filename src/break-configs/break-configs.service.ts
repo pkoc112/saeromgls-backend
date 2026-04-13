@@ -60,9 +60,9 @@ export class BreakConfigsService {
       if (siteConfigs.length > 0) return siteConfigs;
     }
 
-    // 전역 설정 fallback (siteId 무관하게 모든 활성 설정)
+    // 전역 설정 fallback (siteId=null인 전역 설정만)
     return this.prisma.breakConfig.findMany({
-      where: { isActive: true },
+      where: { isActive: true, siteId: null },
       orderBy: { sortOrder: 'asc' },
       select: { startHour: true, startMin: true, endHour: true, endMin: true, label: true },
     });

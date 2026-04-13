@@ -62,9 +62,10 @@ export class WorkItemsController {
   @Get('mobile/work-items')
   @UseGuards(JwtAuthGuard)
   @ApiTags('Mobile Work Items')
+  @ApiQuery({ name: 'siteId', required: false, description: '사업장 ID로 격리' })
   @ApiOperation({
-    summary: '작업 목록 (모바일)',
-    description: '작업 목록을 조회합니다. status 파라미터로 쉼표 구분 다중 상태 필터 가능 (예: ACTIVE,PAUSED).',
+    summary: '작업 목록 (모바일, 사업장 격리)',
+    description: '작업 목록을 조회합니다. siteId로 사업장 격리, status로 상태 필터.',
   })
   @ApiQuery({
     name: 'status',
@@ -80,8 +81,9 @@ export class WorkItemsController {
   findActiveWorkItems(
     @Query('workerId') workerId?: string,
     @Query('status') status?: string,
+    @Query('siteId') siteId?: string,
   ) {
-    return this.workItemsService.findActiveForMobile(workerId, status);
+    return this.workItemsService.findActiveForMobile(workerId, status, siteId);
   }
 
   @Post('mobile/work-items/:id/end')
