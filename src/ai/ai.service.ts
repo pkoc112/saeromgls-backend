@@ -1,6 +1,7 @@
 import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
 import Anthropic from '@anthropic-ai/sdk';
 import { PrismaService } from '../prisma/prisma.service';
+import { Prisma } from '@prisma/client';
 
 @Injectable()
 export class AiService {
@@ -205,7 +206,7 @@ ${JSON.stringify(analysisData, null, 2)}
     const to = new Date(toDate);
     to.setHours(23, 59, 59, 999);
 
-    const where: any = {
+    const where: Prisma.WorkItemWhereInput = {
       startedAt: { gte: from, lte: to },
       status: 'ENDED',
     };

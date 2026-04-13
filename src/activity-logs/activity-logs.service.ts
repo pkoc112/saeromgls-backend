@@ -108,7 +108,7 @@ export class ActivityLogsService {
     return {
       data: data.map((log) => ({
         ...log,
-        metadata: log.metadata ? JSON.parse(log.metadata) : null,
+        metadata: log.metadata ? (() => { try { return JSON.parse(log.metadata); } catch { return log.metadata; } })() : null,
       })),
       meta: {
         total,

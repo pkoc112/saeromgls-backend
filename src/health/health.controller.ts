@@ -7,10 +7,6 @@ export class HealthController {
   @Get()
   @ApiOperation({ summary: '서버 상태 확인' })
   check() {
-    return {
-      status: 'ok',
-      timestamp: new Date().toISOString(),
-      uptime: process.uptime(),
-    };
+    return { status: 'ok' };
   }
 }

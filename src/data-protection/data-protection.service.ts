@@ -44,7 +44,7 @@ export class DataProtectionService {
     return {
       recentBackups: recentBackups.map((b) => ({
         ...b,
-        metadata: b.metadata ? JSON.parse(b.metadata) : null,
+        metadata: b.metadata ? (() => { try { return JSON.parse(b.metadata); } catch { return b.metadata; } })() : null,
       })),
       lastSuccessfulBackup: lastSuccess
         ? {

@@ -194,23 +194,39 @@ export class SubscriptionsService {
       orderBy: { name: 'asc' },
     });
 
-    const results = [];
-    for (const site of sites) {
-      const sub = await this.prisma.subscription.findFirst({
-        where: { siteId: site.id },
-        orderBy: { createdAt: 'desc' },
+    const [subscriptions, workerCounts] = await Promise.all([
+      this.prisma.subscription.findMany({
+        where: { siteId: { in: sites.map((s) => s.id) } },
         include: { plan: true },
-      });
-
-      const workerCount = await this.prisma.worker.count({
+        orderBy: { createdAt: 'desc' },
+      }),
+      this.prisma.worker.groupBy({
+        by: ['siteId'],
         where: {
-          siteId: site.id,
+          siteId: { in: sites.map((s) => s.id) },
           status: 'ACTIVE',
           role: { notIn: ['MASTER', 'ADMIN'] },
         },
-      });
+        _count: { id: true },
+      }),
+    ]);
 
-      results.push({
+    // Build lookup maps
+    const subBySite = new Map<string, typeof subscriptions[0]>();
+    for (const sub of subscriptions) {
+      if (sub.siteId && !subBySite.has(sub.siteId)) {
+        subBySite.set(sub.siteId, sub);
+      }
+    }
+
+    const countBySite = new Map<string, number>();
+    for (const wc of workerCounts) {
+      if (wc.siteId) countBySite.set(wc.siteId, wc._count.id);
+    }
+
+    return sites.map((site) => {
+      const sub = subBySite.get(site.id);
+      return {
         siteId: site.id,
         siteName: site.name,
         siteCode: site.code,
@@ -219,11 +235,9 @@ export class SubscriptionsService {
         status: sub?.status || 'FREE',
         trialEndsAt: sub?.trialEndsAt || null,
         currentPeriodEnd: sub?.currentPeriodEnd || null,
-        workerCount,
-      });
-    }
-
-    return results;
+        workerCount: countBySite.get(site.id) || 0,
+      };
+    });
   }
 
   // ──────────────────────────────────────────────
