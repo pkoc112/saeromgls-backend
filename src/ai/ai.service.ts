@@ -1,4 +1,4 @@
-import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
+import { Injectable, Logger, ServiceUnavailableException, BadRequestException } from '@nestjs/common';
 import Anthropic from '@anthropic-ai/sdk';
 import { PrismaService } from '../prisma/prisma.service';
 import { Prisma } from '@prisma/client';
@@ -201,6 +201,16 @@ ${JSON.stringify(analysisData, null, 2)}
    */
   async generatePolicyPack(siteId: string) {
     this.ensureClientReady();
+
+    // 중복 방지: 이미 DRAFT/SHADOW/ACTIVE 정책이 있으면 차단
+    const existingPolicies = await this.prisma.policyVersion.count({
+      where: { siteId, status: { in: ['DRAFT', 'SHADOW', 'ACTIVE'] } },
+    });
+    if (existingPolicies > 0) {
+      throw new BadRequestException(
+        `이미 ${existingPolicies}개의 활성 정책이 있습니다. 기존 정책을 RETIRED로 변경한 후 다시 생성해주세요.`,
+      );
+    }
 
     // 운영 데이터 수집
     const [workers, workItems, inspections, inboundSessions, dockSessions, voidCount, editCount] = await Promise.all([
