@@ -5,8 +5,10 @@ import {
   NotFoundException,
   Logger,
 } from '@nestjs/common';
+import { randomUUID } from 'crypto';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
+import { Resend } from 'resend';
 import { PrismaService } from '../prisma/prisma.service';
 import { JwtPayload } from '../common/decorators/current-user.decorator';
 import { RegisterDto } from './dto/register.dto';
@@ -24,10 +26,24 @@ export class AuthService {
   /** 메모리 기반 이메일 인증 코드 저장소 (email -> { code, expiresAt }) */
   // 검증코드: DB 저장 (서버리스 호환 — 인메모리 Map은 요청마다 초기화될 수 있음)
 
+  private readonly resend: Resend | null;
+  private readonly fromEmail: string;
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
   ) {
+    // Resend 초기화 (API 키가 없으면 null — 개발 환경 허용)
+    const resendApiKey = process.env.RESEND_API_KEY;
+    if (resendApiKey) {
+      this.resend = new Resend(resendApiKey);
+    } else {
+      this.resend = null;
+      if (process.env.NODE_ENV === 'production') {
+        this.logger.warn('RESEND_API_KEY 미설정 — 운영 환경에서 이메일 발송 불가');
+      }
+    }
+    this.fromEmail = process.env.RESEND_FROM_EMAIL || 'noreply@sae-work.com';
     if (process.env.NODE_ENV === 'production' && !process.env.JWT_SECRET) {
       throw new Error('JWT_SECRET required in production');
     }
@@ -102,7 +118,7 @@ export class AuthService {
         `Employee linked: ${dto.employeeCode} (${target.role})`,
       );
 
-      const token = this.generateToken(
+      const token = await this.generateToken(
         worker!.id,
         worker!.role,
         worker!.employeeCode,
@@ -177,7 +193,7 @@ export class AuthService {
 
     this.logger.log(`New user registered: ${dto.email}`);
 
-    const token = this.generateToken(
+    const token = await this.generateToken(
       worker.id,
       worker.role,
       worker.employeeCode,
@@ -268,12 +284,11 @@ export class AuthService {
   // ──────────────────────────────────────────────
   async refreshAccessToken(refreshToken: string) {
     try {
-      const refreshSecret = process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET;
-      if (!refreshSecret && process.env.NODE_ENV === 'production') {
+      if (false) {
         throw new Error('JWT_REFRESH_SECRET 또는 JWT_SECRET 환경변수가 필요합니다');
       }
       const payload = this.jwtService.verify(refreshToken, {
-        secret: refreshSecret || 'fallback-secret-for-dev',
+        secret: this.getRefreshSecret(),
       });
 
       // DB에서 토큰 유효성 확인 (순환 + 재사용 차단)
@@ -281,10 +296,16 @@ export class AuthService {
         where: { token: refreshToken },
       });
 
-      if (storedToken?.revokedAt) {
+      if (!storedToken) {
+        throw new UnauthorizedException(
+          '로그인 유효 기간이 종료되었습니다. 다시 로그인해주세요.',
+        );
+      }
+
+      if (storedToken.revokedAt) {
         // 이미 사용된 토큰 재사용 시도 → 해당 패밀리 전체 무효화 (탈취 의심)
         await this.prisma.refreshToken.updateMany({
-          where: { family: storedToken.family },
+          where: { family: storedToken.family, revokedAt: null },
           data: { revokedAt: new Date() },
         });
         this.logger.warn(`Refresh token replay detected! Family ${storedToken.family} revoked.`);
@@ -292,12 +313,20 @@ export class AuthService {
       }
 
       // 현재 토큰 사용 처리 (revoke)
-      if (storedToken) {
+      if (storedToken.expiresAt <= new Date()) {
         await this.prisma.refreshToken.update({
           where: { id: storedToken.id },
           data: { revokedAt: new Date() },
         });
+        throw new UnauthorizedException(
+          '리프레시 토큰이 만료되었습니다. 다시 로그인해주세요.',
+        );
       }
+
+      await this.prisma.refreshToken.update({
+        where: { id: storedToken.id },
+        data: { revokedAt: new Date() },
+      });
 
       const worker = await this.prisma.worker.findUnique({
         where: { id: payload.sub },
@@ -314,21 +343,15 @@ export class AuthService {
         throw new UnauthorizedException('유효하지 않은 토큰입니다');
       }
 
-      const token = this.generateToken(
+      const token = await this.generateToken(
         worker.id,
         worker.role,
         worker.employeeCode,
         worker.siteId ?? undefined,
+        storedToken.family,
       );
 
       // 새 토큰에 같은 family 부여 (토큰 체인 추적)
-      if (storedToken) {
-        await this.prisma.refreshToken.updateMany({
-          where: { token: token.refreshToken },
-          data: { family: storedToken.family },
-        });
-      }
-
       return {
         access_token: token.accessToken,
         refresh_token: token.refreshToken,
@@ -349,6 +372,7 @@ export class AuthService {
   async resetPassword(
     email: string,
     employeeCode: string,
+    verificationCode: string,
     newPassword: string,
   ) {
     const worker = await this.prisma.worker.findUnique({
@@ -363,12 +387,21 @@ export class AuthService {
       throw new BadRequestException('사번 정보가 일치하지 않습니다');
     }
 
+    await this.consumeVerificationCode(email, verificationCode);
     const passwordHash = await bcrypt.hash(newPassword, 10);
 
-    await this.prisma.worker.update({
-      where: { id: worker.id },
-      data: { passwordHash },
-    });
+    await this.prisma.$transaction([
+      this.prisma.worker.update({
+        where: { id: worker.id },
+        data: {
+          passwordHash,
+          emailVerified: true,
+        },
+      }),
+      this.prisma.refreshToken.deleteMany({
+        where: { workerId: worker.id },
+      }),
+    ]);
 
     this.logger.log(`Password reset for: ${email}`);
     return { message: '비밀번호가 성공적으로 재설정되었습니다' };
@@ -398,12 +431,45 @@ export class AuthService {
       data: { email, code, expiresAt },
     });
 
-    this.logger.log(`Verification code sent to ${email}`);
+    // ── 이메일 발송 (Resend) ──────────────────────────────────
+    if (this.resend) {
+      try {
+        const { error } = await this.resend.emails.send({
+          from: `새롬 GLS <${this.fromEmail}>`,
+          to: [email],
+          subject: `[새롬 GLS] 이메일 인증 코드: ${code}`,
+          html: `
+            <div style="font-family:'Apple SD Gothic Neo',sans-serif;max-width:480px;margin:0 auto;padding:32px">
+              <h2 style="color:#191F28;margin-bottom:8px">새롬 GLS 인증 코드</h2>
+              <p style="color:#4E5968;font-size:14px;margin-bottom:24px">
+                아래 인증 코드를 입력해주세요. 코드는 10분 동안 유효합니다.
+              </p>
+              <div style="background:#F2F3F5;border-radius:12px;padding:20px;text-align:center;margin-bottom:24px">
+                <span style="font-size:32px;font-weight:700;letter-spacing:8px;color:#191F28">${code}</span>
+              </div>
+              <p style="color:#8B95A1;font-size:12px">
+                본인이 요청하지 않았다면 이 메일을 무시해주세요.
+              </p>
+            </div>
+          `,
+        });
 
-    // TODO: 실제 이메일 발송 연동
+        if (error) {
+          this.logger.error(`Resend 발송 실패: ${JSON.stringify(error)}`);
+          // 발송 실패해도 코드는 이미 DB에 저장됨 — 재시도 가능
+        } else {
+          this.logger.log(`인증 코드 이메일 발송 완료: ${email}`);
+        }
+      } catch (err) {
+        this.logger.error(`Resend 예외: ${err}`);
+      }
+    } else {
+      this.logger.log(`[DEV] 인증 코드 ${code} → ${email} (Resend 미설정, 이메일 미발송)`);
+    }
+
     return {
-      message: '인증 코드가 발급되었습니다',
-      // 개발 환경에서만 코드 반환
+      message: '인증 코드가 발송되었습니다',
+      // 개발 환경에서만 코드 직접 반환 (운영에서는 이메일로만 수신)
       ...(process.env.NODE_ENV !== 'production' && { code }),
     };
   }
@@ -655,7 +721,7 @@ export class AuthService {
     await this.recordLoginHistory(worker.id, true, ipAddress, userAgent);
     this.logger.log(`Admin login: ${worker.employeeCode} (${worker.role})`);
 
-    const token = this.generateToken(
+    const token = await this.generateToken(
       worker.id,
       worker.role,
       worker.employeeCode,
@@ -724,12 +790,12 @@ export class AuthService {
     this.logger.log(`Mobile login: ${worker.employeeCode} (${worker.role})`);
 
     return {
-      ...this.generateToken(
+      ...(await this.generateToken(
         worker.id,
         worker.role,
         worker.employeeCode,
         worker.siteId ?? undefined,
-      ),
+      )),
       worker: {
         id: worker.id,
         name: worker.name,
@@ -742,11 +808,12 @@ export class AuthService {
   // ──────────────────────────────────────────────
   // JWT 토큰 생성 (access + refresh)
   // ──────────────────────────────────────────────
-  generateToken(
+  async generateToken(
     workerId: string,
     role: string,
     employeeCode: string,
     siteId?: string,
+    family?: string,
   ) {
     const payload: Omit<JwtPayload, 'iat' | 'exp'> = {
       sub: workerId,
@@ -756,31 +823,88 @@ export class AuthService {
     };
 
     const accessToken = this.jwtService.sign(payload);
+    if (false) {
 
-    const refreshSecret = process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET;
-    if (!refreshSecret && process.env.NODE_ENV === 'production') {
       throw new Error('JWT_REFRESH_SECRET 또는 JWT_SECRET 환경변수가 필요합니다');
     }
 
     const refreshToken = this.jwtService.sign(payload, {
-      secret: refreshSecret || 'fallback-secret-for-dev',
-      expiresIn: process.env.JWT_REFRESH_EXPIRES_IN || '7d',
+      secret: this.getRefreshSecret(),
+      expiresIn: this.getRefreshTokenTtl(),
     });
 
     // DB에 리프레시 토큰 저장 (비동기, 로그인 응답 지연 방지)
-    this.prisma.refreshToken.create({
+    await this.prisma.refreshToken.create({
       data: {
         token: refreshToken,
         workerId,
-        expiresAt: new Date(Date.now() + 7 * 24 * 3600 * 1000),
+        family: family ?? randomUUID(),
+        expiresAt: new Date(Date.now() + this.getRefreshTokenExpiryMs()),
       },
-    }).catch((err) => this.logger.error('RefreshToken save failed', err));
+    });
 
     return {
       accessToken,
       refreshToken,
       tokenType: 'Bearer' as const,
     };
+  }
+
+  private getRefreshSecret(): string {
+    const refreshSecret = process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET;
+    if (!refreshSecret && process.env.NODE_ENV === 'production') {
+      throw new Error('JWT_REFRESH_SECRET required in production');
+    }
+    return refreshSecret || 'fallback-secret-for-dev';
+  }
+
+  private getRefreshTokenTtl(): string {
+    return process.env.JWT_REFRESH_EXPIRES_IN || '7d';
+  }
+
+  private getRefreshTokenExpiryMs(): number {
+    const ttl = this.getRefreshTokenTtl().trim();
+    if (/^\d+$/.test(ttl)) {
+      return Number(ttl) * 1000;
+    }
+
+    const match = ttl.match(/^(\d+)([smhd])$/i);
+    if (!match) {
+      return 7 * 24 * 60 * 60 * 1000;
+    }
+
+    const value = Number(match[1]);
+    const unit = match[2].toLowerCase();
+    const unitMap: Record<string, number> = {
+      s: 1000,
+      m: 60 * 1000,
+      h: 60 * 60 * 1000,
+      d: 24 * 60 * 60 * 1000,
+    };
+
+    return value * unitMap[unit];
+  }
+
+  private async consumeVerificationCode(email: string, code: string) {
+    const stored = await this.prisma.verificationCode.findFirst({
+      where: { email },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    if (!stored) {
+      throw new BadRequestException('인증 코드가 발급되지 않았습니다');
+    }
+
+    if (new Date() > stored.expiresAt) {
+      await this.prisma.verificationCode.deleteMany({ where: { email } });
+      throw new BadRequestException('인증 코드가 만료되었습니다');
+    }
+
+    if (stored.code !== code) {
+      throw new BadRequestException('인증 코드가 올바르지 않습니다');
+    }
+
+    await this.prisma.verificationCode.deleteMany({ where: { email } });
   }
 
   // ──────────────────────────────────────────────
