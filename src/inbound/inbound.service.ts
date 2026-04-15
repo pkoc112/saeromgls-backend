@@ -16,6 +16,12 @@ export class InboundService {
 
   constructor(private readonly prisma: PrismaService) {}
 
+  /** MASTER 전용: 첫 번째 활성 사업장 ID */
+  async getFirstActiveSiteId(): Promise<string | null> {
+    const site = await this.prisma.site.findFirst({ where: { isActive: true }, select: { id: true } });
+    return site?.id || null;
+  }
+
   /**
    * 입고 세션 목록 조회 (페이지네이션, 필터)
    */

@@ -7,6 +7,7 @@ import {
   Query,
   UseGuards,
   ParseUUIDPipe,
+  BadRequestException,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -58,7 +59,10 @@ export class InboundController {
     @Body() dto: CreateInboundSessionDto,
     @CurrentUser() user: JwtPayload,
   ) {
-    const siteId = resolveSiteId(user, undefined) || '';
+    const siteId = resolveSiteId(user, (dto as any).siteId) || user.siteId || '';
+    if (!siteId) {
+      throw new BadRequestException('사업장을 선택해주세요 (siteId 필수)');
+    }
     return this.inboundService.create(dto, siteId);
   }
 
@@ -70,11 +74,19 @@ export class InboundController {
   })
   @ApiResponse({ status: 201, description: '엑셀 기반 입고 세션 생성 완료' })
   @ApiResponse({ status: 400, description: '유효하지 않은 엑셀 데이터' })
-  uploadExcel(
+  async uploadExcel(
     @Body() fileData: any,
     @CurrentUser() user: JwtPayload,
   ) {
-    const siteId = resolveSiteId(user, undefined) || '';
+    // body.siteId 또는 JWT siteId, MASTER는 첫 번째 활성 사업장 자동 사용
+    let siteId = resolveSiteId(user, fileData.siteId) || user.siteId || '';
+    if (!siteId) {
+      const firstSite = await this.inboundService.getFirstActiveSiteId();
+      siteId = firstSite || '';
+    }
+    if (!siteId) {
+      throw new BadRequestException('사업장을 선택해주세요 (siteId 필수)');
+    }
     return this.inboundService.uploadExcel(siteId, fileData, user.sub);
   }
 

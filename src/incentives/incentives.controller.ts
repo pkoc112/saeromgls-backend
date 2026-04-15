@@ -17,6 +17,7 @@ import {
   ApiParam,
 } from '@nestjs/swagger';
 import { IncentivesService } from './incentives.service';
+import { PrismaService } from '../prisma/prisma.service';
 import { CreatePolicyDto } from './dto/create-policy.dto';
 import { CreateScoreRunDto } from './dto/create-score-run.dto';
 import { CreateObjectionDto } from './dto/create-objection.dto';
@@ -32,7 +33,10 @@ import { resolveSiteId } from '../common/utils/site-scope';
 @Controller('admin/incentives')
 @UseGuards(JwtAuthGuard, RolesGuard)
 export class IncentivesController {
-  constructor(private readonly incentivesService: IncentivesService) {}
+  constructor(
+    private readonly incentivesService: IncentivesService,
+    private readonly prisma: PrismaService,
+  ) {}
 
   // ======================== Policies ========================
 
@@ -49,6 +53,37 @@ export class IncentivesController {
   ) {
     const siteId = resolveSiteId(user, query.siteId);
     return this.incentivesService.getPolicyVersions(siteId, query);
+  }
+
+  // ── 5트랙→4트랙 마이그레이션 (policies/:id보다 먼저 매칭되어야 함) ──
+  @Post('policies/migrate-v3')
+  @Roles('ADMIN')
+  @ApiOperation({ summary: '5트랙→4트랙 정책 마이그레이션' })
+  async migratePoliciesV3(@CurrentUser() user: JwtPayload) {
+    const siteId = user.siteId;
+    const retired = await this.prisma.policyVersion.updateMany({
+      where: { status: { in: ['DRAFT', 'SHADOW', 'ACTIVE'] }, ...(siteId ? { siteId } : {}) },
+      data: { status: 'RETIRED', effectiveTo: new Date() },
+    });
+    const sites = siteId
+      ? [{ id: siteId }]
+      : await this.prisma.site.findMany({ where: { isActive: true }, select: { id: true } });
+    const NEW_TRACKS = [
+      { track: 'OUTBOUND', name: '출고 전담 정책 v3', perf: 55, rel: 30, team: 15, desc: '처리량40 + 효율30 + 물동량30 | 절대평가' },
+      { track: 'INBOUND_DOCK', name: '입고·상하차 정책 v3', perf: 55, rel: 30, team: 15, desc: '입고세션25 + 수량25 + 출고참여25 + 정확도25 | 양방향 통합' },
+      { track: 'INSPECTION', name: '검수 전담 정책 v3', perf: 55, rel: 30, team: 15, desc: '검수건수35 + 탐지율40 + 커버리지25 | 절대평가' },
+      { track: 'MANAGER', name: '현장관리자 정책 v3', perf: 40, rel: 35, team: 25, desc: '팀성과35 + 예외처리35 + 커버리지30 | 관리자 전용' },
+    ];
+    const created: any[] = [];
+    for (const site of sites) {
+      for (const t of NEW_TRACKS) {
+        const pv = await this.prisma.policyVersion.create({
+          data: { siteId: site.id, name: t.name, description: t.desc, track: t.track, weights: JSON.stringify({ performance: t.perf, reliability: t.rel, teamwork: t.team }), status: 'SHADOW', effectiveFrom: new Date() },
+        });
+        created.push(pv);
+      }
+    }
+    return { message: `마이그레이션 완료: ${retired.count}개 폐기, ${created.length}개 신규 생성`, retired: retired.count, created: created.length, newPolicies: created.map((p: any) => ({ id: p.id, track: p.track, name: p.name })) };
   }
 
   @Post('policies')
