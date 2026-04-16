@@ -723,9 +723,16 @@ export class IncentivesService {
       try { const d = JSON.parse(run.policyVersion.details); if (d.payoutBands) payoutBands = d.payoutBands; } catch { /* ignore */ }
     }
 
+    // baseIncentive로 밴드 금액 비례 스케일링 (기본값 500000 = A등급 기준)
+    const aAmount = payoutBands.find((b: any) => b.grade === 'A')?.amount || 500000;
+    const scale = aAmount > 0 ? baseIncentive / aAmount : 1;
+    const effectiveBands = scale !== 1
+      ? payoutBands.map((b: any) => ({ ...b, amount: Math.round(b.amount * scale) }))
+      : payoutBands;
+
     const payoutData = run.entries.map((entry) => {
       const totalScore = Number(entry.totalScore) || 0;
-      const { grade, amount } = getGrade(totalScore, payoutBands);
+      const { grade, amount } = getGrade(totalScore, effectiveBands);
       return {
         workerId: entry.worker.id, workerName: entry.worker.name, employeeCode: entry.worker.employeeCode,
         track: entry.track,
@@ -739,7 +746,7 @@ export class IncentivesService {
     return {
       scoreRunId: run.id, month: run.month, status: run.status,
       policyName: run.policyVersion?.name || '-', track: run.policyVersion?.track || '-',
-      payoutBands,
+      baseIncentive, payoutBands: effectiveBands,
       totalPayout: payoutData.reduce((s, p) => s + p.estimatedPayout, 0),
       workerCount: payoutData.length, data: payoutData,
       gradeDistribution: {

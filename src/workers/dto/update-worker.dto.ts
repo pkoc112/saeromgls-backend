@@ -51,11 +51,11 @@ export class UpdateWorkerDto {
   status?: string;
 
   @ApiProperty({
-    description: '직무 트랙',
-    enum: ['OUTBOUND_RANKED', 'INBOUND_SUPPORT', 'INSPECTION_GOAL', 'DOCK_WRAP_GOAL', 'MANAGER_OPS'],
+    description: '직무 트랙 (신 4트랙 + 구 5트랙 호환)',
+    enum: ['OUTBOUND', 'INBOUND_DOCK', 'INSPECTION', 'MANAGER', 'OUTBOUND_RANKED', 'INBOUND_SUPPORT', 'INSPECTION_GOAL', 'DOCK_WRAP_GOAL', 'MANAGER_OPS'],
     required: false,
   })
-  @IsIn(['OUTBOUND_RANKED', 'INBOUND_SUPPORT', 'INSPECTION_GOAL', 'DOCK_WRAP_GOAL', 'MANAGER_OPS'])
+  @IsIn(['OUTBOUND', 'INBOUND_DOCK', 'INSPECTION', 'MANAGER', 'OUTBOUND_RANKED', 'INBOUND_SUPPORT', 'INSPECTION_GOAL', 'DOCK_WRAP_GOAL', 'MANAGER_OPS'])
   @IsOptional()
   jobTrack?: string;
 
