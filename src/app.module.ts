@@ -22,6 +22,7 @@ import { DockModule } from './dock/dock.module';
 import { IncentivesModule } from './incentives/incentives.module';
 import { MlGovernanceModule } from './ml-governance/ml-governance.module';
 import { CustomerOpsModule } from './customer-ops/customer-ops.module';
+import { HealthModule } from './health/health.module';
 
 @Module({
   imports: [
@@ -47,6 +48,7 @@ import { CustomerOpsModule } from './customer-ops/customer-ops.module';
     IncentivesModule,
     MlGovernanceModule,
     CustomerOpsModule,
+    HealthModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })

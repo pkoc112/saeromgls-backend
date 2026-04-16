@@ -1,27 +1,40 @@
-import { Controller, Post, Get, Patch, Body, Param, HttpCode, HttpStatus, UseGuards, Req } from '@nestjs/common';
-import { ApiTags, ApiOperation, ApiResponse, ApiBody, ApiBearerAuth } from '@nestjs/swagger';
+import {
+  Body,
+  Controller,
+  Get,
+  HttpCode,
+  HttpStatus,
+  Param,
+  Patch,
+  Post,
+  Req,
+  UseGuards,
+} from '@nestjs/common';
+import {
+  ApiBearerAuth,
+  ApiBody,
+  ApiOperation,
+  ApiResponse,
+  ApiTags,
+} from '@nestjs/swagger';
 import { Request } from 'express';
+import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { AuthService } from './auth.service';
+import { DeleteAccountDto } from './dto/delete-account.dto';
+import { EmailLoginDto } from './dto/email-login.dto';
 import { LoginDto } from './dto/login.dto';
 import { PinLoginDto } from './dto/pin-login.dto';
-import { RegisterDto } from './dto/register.dto';
-import { EmailLoginDto } from './dto/email-login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
+import { RegisterDto } from './dto/register.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { UpdateMeDto } from './dto/update-me.dto';
-import { DeleteAccountDto } from './dto/delete-account.dto';
 import { JwtAuthGuard } from './jwt-auth.guard';
-import { CurrentUser, JwtPayload } from '../common/decorators/current-user.decorator';
 
 @Controller()
 export class AuthController {
   constructor(private readonly authService: AuthService) {}
 
-  /**
-   * 관리자 웹 대시보드 로그인
-   */
   @Post('admin/auth/login')
-
   @HttpCode(HttpStatus.OK)
   @ApiTags('Admin Auth')
   @ApiOperation({ summary: '관리자 로그인' })
@@ -34,11 +47,7 @@ export class AuthController {
     return this.authService.validateAdmin(dto.employeeCode, dto.pin, ip, ua);
   }
 
-  /**
-   * 모바일 앱 PIN 로그인
-   */
   @Post('mobile/auth/pin-login')
-
   @HttpCode(HttpStatus.OK)
   @ApiTags('Mobile Auth')
   @ApiOperation({ summary: '모바일 PIN 로그인' })
@@ -51,9 +60,6 @@ export class AuthController {
     return this.authService.validatePin(dto.workerId, dto.pin, ip, ua);
   }
 
-  /**
-   * 토큰 갱신
-   */
   @Post('auth/refresh')
   @HttpCode(HttpStatus.OK)
   @ApiTags('Auth')
@@ -63,36 +69,24 @@ export class AuthController {
     return this.authService.refreshAccessToken(dto.refreshToken);
   }
 
-  /**
-   * 사번 검증 (회원가입 연결용, 인증 불필요)
-   */
   @Get('auth/verify-employee-code/:code')
   @ApiTags('Auth')
-  @ApiOperation({ summary: '사번 유효성 검증 (회원가입 연결용)' })
+  @ApiOperation({ summary: '사번 유효성 검증(회원가입 연결용)' })
   async verifyEmployeeCode(@Param('code') code: string) {
-    const worker = await this.authService.verifyEmployeeCode(code);
-    return worker;
+    return this.authService.verifyEmployeeCode(code);
   }
 
-  /**
-   * 회원가입 (사번 연결 또는 신규 생성)
-   */
   @Post('auth/register')
-
   @HttpCode(HttpStatus.CREATED)
   @ApiTags('Auth')
-  @ApiOperation({ summary: '회원가입 (사번 연결 시 employeeCode 포함)' })
+  @ApiOperation({ summary: '회원가입(사번 연결 또는 신규 생성)' })
   @ApiBody({ type: RegisterDto })
   @ApiResponse({ status: 201, description: '회원가입 성공' })
   async register(@Body() dto: RegisterDto) {
     return this.authService.register(dto);
   }
 
-  /**
-   * 이메일/비밀번호 로그인
-   */
   @Post('auth/email-login')
-
   @HttpCode(HttpStatus.OK)
   @ApiTags('Auth')
   @ApiOperation({ summary: '이메일 로그인' })
@@ -100,8 +94,19 @@ export class AuthController {
   async emailLogin(@Body() dto: EmailLoginDto, @Req() req: Request) {
     const ip = req.ip || req.headers['x-forwarded-for']?.toString();
     const ua = req.headers['user-agent'];
-    const worker = await this.authService.validateEmailPassword(dto.email, dto.password, ip, ua);
-    const token = this.authService.generateToken(worker.id, worker.role, worker.employeeCode, worker.siteId ?? undefined);
+    const worker = await this.authService.validateEmailPassword(
+      dto.email,
+      dto.password,
+      ip,
+      ua,
+    );
+    const token = await this.authService.generateToken(
+      worker.id,
+      worker.role,
+      worker.employeeCode,
+      worker.siteId ?? undefined,
+    );
+
     return {
       access_token: token.accessToken,
       refresh_token: token.refreshToken,
@@ -117,21 +122,19 @@ export class AuthController {
     };
   }
 
-  /**
-   * 비밀번호 재설정
-   */
   @Post('auth/reset-password')
-
   @HttpCode(HttpStatus.OK)
   @ApiTags('Auth')
-  @ApiOperation({ summary: '비밀번호 재설정' })
+  @ApiOperation({ summary: '비밀번호 재설정(이메일 인증 코드 필요)' })
   async resetPassword(@Body() dto: ResetPasswordDto) {
-    return this.authService.resetPassword(dto.email || '', dto.employeeCode, dto.newPassword);
+    return this.authService.resetPassword(
+      dto.email,
+      dto.employeeCode,
+      dto.verificationCode,
+      dto.newPassword,
+    );
   }
 
-  /**
-   * 이메일 중복 확인
-   */
   @Get('auth/check-email/:email')
   @ApiTags('Auth')
   @ApiOperation({ summary: '이메일 중복 확인' })
@@ -140,11 +143,7 @@ export class AuthController {
     return { available };
   }
 
-  /**
-   * 이메일 인증 코드 발급
-   */
   @Post('auth/send-verification')
-
   @HttpCode(HttpStatus.OK)
   @ApiTags('Auth')
   @ApiOperation({ summary: '이메일 인증 코드 발급' })
@@ -152,11 +151,7 @@ export class AuthController {
     return this.authService.sendVerificationCode(dto.email);
   }
 
-  /**
-   * 이메일 인증 확인
-   */
   @Post('auth/verify-email')
-
   @HttpCode(HttpStatus.OK)
   @ApiTags('Auth')
   @ApiOperation({ summary: '이메일 인증 확인' })
@@ -164,9 +159,6 @@ export class AuthController {
     return this.authService.verifyEmail(dto.email, dto.code);
   }
 
-  /**
-   * 내 정보 조회
-   */
   @Get('auth/me')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
@@ -176,25 +168,16 @@ export class AuthController {
     return this.authService.getMe(workerId);
   }
 
-  /**
-   * 내 정보 수정
-   */
   @Patch('auth/me')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()
   @HttpCode(HttpStatus.OK)
   @ApiTags('Auth')
   @ApiOperation({ summary: '내 정보 수정' })
-  async updateMe(
-    @CurrentUser('sub') workerId: string,
-    @Body() dto: UpdateMeDto,
-  ) {
+  async updateMe(@CurrentUser('sub') workerId: string, @Body() dto: UpdateMeDto) {
     return this.authService.updateMe(workerId, dto);
   }
 
-  /**
-   * 계정 탈퇴
-   */
   @Post('auth/delete-account')
   @UseGuards(JwtAuthGuard)
   @ApiBearerAuth()

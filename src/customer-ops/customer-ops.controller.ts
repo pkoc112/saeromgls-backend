@@ -1,23 +1,28 @@
 import {
+  Body,
   Controller,
   Get,
-  Post,
-  Patch,
-  Body,
   Param,
+  ParseUUIDPipe,
+  Patch,
+  Post,
   Query,
   UseGuards,
-  ParseUUIDPipe,
 } from '@nestjs/common';
-import { CustomerOpsService } from './customer-ops.service';
+import { JwtPayload, CurrentUser } from '../common/decorators/current-user.decorator';
+import { resolveSiteId } from '../common/utils/site-scope';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
+import { RolesGuard } from '../auth/roles.guard';
+import { CustomerOpsService } from './customer-ops.service';
 import {
   CreateSiteFromTemplateDto,
   CreateSupportCaseDto,
-  ResolveSupportCaseDto,
   GenerateUsageSnapshotDto,
+  ResolveSupportCaseDto,
+  StartOnboardingRunDto,
+  UpdateOnboardingRunDto,
+  UpsertTenantSettingsDto,
 } from './dto/customer-ops.dto';
 
 @Controller('admin/customer-ops')
@@ -25,57 +30,57 @@ import {
 export class CustomerOpsController {
   constructor(private readonly customerOpsService: CustomerOpsService) {}
 
-  /**
-   * 고객 현황 개요 (MASTER 전용)
-   */
   @Get('overview')
   @Roles('MASTER')
-  getCustomerOverview() {
-    return this.customerOpsService.getCustomerOverview();
+  getCustomerOverview(@Query('siteId') siteId?: string) {
+    return this.customerOpsService.getCustomerOverview(siteId);
   }
 
-  /**
-   * 사업장 템플릿 목록 (MASTER 전용)
-   */
+  @Get('operations-console')
+  @Roles('ADMIN')
+  getOperationsConsole(
+    @Query('siteId') querySiteId: string | undefined,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    const siteId = resolveSiteId(user, querySiteId);
+    return this.customerOpsService.getOperationsConsole(siteId);
+  }
+
   @Get('templates')
   @Roles('MASTER')
   getSiteTemplates() {
     return this.customerOpsService.getSiteTemplates();
   }
 
-  /**
-   * 템플릿 기반 사업장 생성 (MASTER 전용)
-   */
   @Post('sites-from-template')
   @Roles('MASTER')
   createSiteFromTemplate(@Body() dto: CreateSiteFromTemplateDto) {
     return this.customerOpsService.createSiteFromTemplate(dto);
   }
 
-  /**
-   * 지원 케이스 목록 조회 (ADMIN 이상)
-   */
   @Get('support-cases')
   @Roles('ADMIN')
   getSupportCases(
-    @Query('siteId') siteId?: string,
+    @Query('siteId') querySiteId: string | undefined,
     @Query('status') status?: string,
+    @CurrentUser() user?: JwtPayload,
   ) {
+    const siteId = resolveSiteId(user, querySiteId);
     return this.customerOpsService.getSupportCases(siteId, status);
   }
 
-  /**
-   * 지원 케이스 생성 (ADMIN 이상)
-   */
   @Post('support-cases')
   @Roles('ADMIN')
-  createSupportCase(@Body() dto: CreateSupportCaseDto) {
+  createSupportCase(
+    @Body() dto: CreateSupportCaseDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    if (user.role !== 'MASTER') {
+      dto.siteId = user.siteId || dto.siteId;
+    }
     return this.customerOpsService.createSupportCase(dto);
   }
 
-  /**
-   * 지원 케이스 해결 (MASTER 전용)
-   */
   @Patch('support-cases/:id/resolve')
   @Roles('MASTER')
   resolveSupportCase(
@@ -85,21 +90,68 @@ export class CustomerOpsController {
     return this.customerOpsService.resolveSupportCase(id, dto);
   }
 
-  /**
-   * 사용량 스냅샷 생성 (MASTER 전용)
-   */
   @Post('usage-snapshots')
   @Roles('MASTER')
   generateUsageSnapshot(@Body() dto: GenerateUsageSnapshotDto) {
     return this.customerOpsService.generateUsageSnapshot(dto);
   }
 
-  /**
-   * 사용량 스냅샷 목록 조회 (MASTER 전용)
-   */
   @Get('usage-snapshots')
   @Roles('MASTER')
   getUsageSnapshots(@Query('siteId') siteId?: string) {
     return this.customerOpsService.getUsageSnapshots(siteId);
+  }
+
+  @Get('onboarding-runs')
+  @Roles('ADMIN')
+  getOnboardingRuns(
+    @Query('siteId') querySiteId: string | undefined,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    const siteId = resolveSiteId(user, querySiteId);
+    return this.customerOpsService.getOnboardingRuns(siteId);
+  }
+
+  @Post('onboarding-runs')
+  @Roles('ADMIN')
+  startOnboardingRun(
+    @Body() dto: StartOnboardingRunDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    if (user.role !== 'MASTER') {
+      dto.siteId = user.siteId || dto.siteId;
+    }
+    return this.customerOpsService.startOnboardingRun(dto.siteId);
+  }
+
+  @Patch('onboarding-runs/:id')
+  @Roles('ADMIN')
+  updateOnboardingRun(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: UpdateOnboardingRunDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.customerOpsService.updateOnboardingRun(id, dto, user);
+  }
+
+  @Get('tenant-settings')
+  @Roles('ADMIN')
+  getTenantSettings(
+    @Query('siteId') querySiteId: string | undefined,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    const siteId = resolveSiteId(user, querySiteId);
+    return this.customerOpsService.getTenantSettings(siteId);
+  }
+
+  @Patch('tenant-settings')
+  @Roles('ADMIN')
+  updateTenantSettings(
+    @Query('siteId') querySiteId: string | undefined,
+    @Body() dto: UpsertTenantSettingsDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    const siteId = resolveSiteId(user, querySiteId);
+    return this.customerOpsService.updateTenantSettings(siteId, dto);
   }
 }
