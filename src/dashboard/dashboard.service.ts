@@ -97,12 +97,13 @@ export class DashboardService {
       const durationResult = await this.prisma.$queryRaw<
         { avg_minutes: number }[]
       >(Prisma.sql`
-        SELECT AVG(EXTRACT(EPOCH FROM (ended_at - started_at)) / 60.0) as avg_minutes
+        SELECT AVG(GREATEST(EXTRACT(EPOCH FROM (ended_at - started_at)), 0) / 60.0) as avg_minutes
         FROM work_items
         WHERE started_at >= ${fromDate}
           AND started_at <= ${toDate}
           AND status = 'ENDED'
           AND ended_at IS NOT NULL
+          AND ended_at >= started_at
           ${siteFilter}
       `);
       avgDurationMinutes = durationResult[0]?.avg_minutes
@@ -153,6 +154,29 @@ export class DashboardService {
       _sum: { volume: true, quantity: true },
     });
 
+    // 작업자별 평균 소요시간 (음수 클램핑, 역전된 시간 제외)
+    const siteJoinFilter = siteId
+      ? Prisma.sql`AND (w.site_id = ${siteId} OR w.site_id IS NULL)`
+      : Prisma.empty;
+    const durationByWorker = await this.prisma.$queryRaw<
+      { worker_id: string; avg_minutes: number | null }[]
+    >(Prisma.sql`
+      SELECT wi.started_by_worker_id as worker_id,
+             AVG(GREATEST(EXTRACT(EPOCH FROM (wi.ended_at - wi.started_at)), 0) / 60.0) as avg_minutes
+      FROM work_items wi
+      LEFT JOIN workers w ON w.id = wi.started_by_worker_id
+      WHERE wi.started_at >= ${fromDate}
+        AND wi.started_at <= ${toDate}
+        AND wi.status = 'ENDED'
+        AND wi.ended_at IS NOT NULL
+        AND wi.ended_at >= wi.started_at
+        ${siteJoinFilter}
+      GROUP BY wi.started_by_worker_id
+    `);
+    const durationMap = Object.fromEntries(
+      durationByWorker.map(d => [d.worker_id, d.avg_minutes != null ? Number(d.avg_minutes) : null]),
+    );
+
     // 작업자 이름 조회
     const workerIds = byWorker.map(w => w.startedByWorkerId);
     const workers = await this.prisma.worker.findMany({
@@ -169,6 +193,7 @@ export class DashboardService {
         count: w._count,
         totalVolume: Number(w._sum.volume ?? 0),
         totalQuantity: Number(w._sum.quantity ?? 0),
+        avgDuration: durationMap[w.startedByWorkerId] ?? null,
       }))
       .sort((a, b) => b.count - a.count);
 
