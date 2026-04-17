@@ -2,6 +2,7 @@ import { Injectable, Logger, ServiceUnavailableException, BadRequestException } 
 import Anthropic from '@anthropic-ai/sdk';
 import { PrismaService } from '../prisma/prisma.service';
 import { Prisma } from '@prisma/client';
+import { calcNetWorkMinutes } from '../common/utils/net-work-minutes';
 
 @Injectable()
 export class AiService {
@@ -42,6 +43,7 @@ export class AiService {
         quantity: true,
         startedAt: true,
         endedAt: true,
+        notes: true, // pauseHistory 파싱용
         classification: { select: { code: true } },
         startedByWorker: { select: { employeeCode: true } },
         assignments: {
@@ -109,6 +111,7 @@ ${JSON.stringify(summary, null, 2)}
         quantity: true,
         startedAt: true,
         endedAt: true,
+        notes: true, // pauseHistory 파싱용
         classification: { select: { code: true } },
         startedByWorker: { select: { employeeCode: true } },
       },
@@ -118,7 +121,7 @@ ${JSON.stringify(summary, null, 2)}
       return { message: '해당 기간에 작업 데이터가 없습니다', anomalies: [] };
     }
 
-    // 이상 탐지를 위한 데이터 준비
+    // 이상 탐지를 위한 데이터 준비 (중간마감 차감한 순수 작업시간 사용)
     const analysisData = workItems.map((item) => ({
       status: item.status,
       classification: item.classification.code,
@@ -128,7 +131,7 @@ ${JSON.stringify(summary, null, 2)}
       started_at: item.startedAt.toISOString(),
       ended_at: item.endedAt?.toISOString() || null,
       duration_minutes: item.endedAt
-        ? Math.round((item.endedAt.getTime() - item.startedAt.getTime()) / 60000)
+        ? calcNetWorkMinutes(item.startedAt, item.endedAt, item.notes)
         : null,
     }));
 
@@ -373,6 +376,7 @@ ${JSON.stringify(dataContext, null, 2)}
         quantity: true,
         startedAt: true,
         endedAt: true,
+        notes: true, // pauseHistory 파싱용
         classification: { select: { code: true, displayName: true } },
         startedByWorker: { select: { employeeCode: true } },
         assignments: {
@@ -406,7 +410,8 @@ ${JSON.stringify(dataContext, null, 2)}
       d.totalVolume += Number(item.volume);
       d.totalQuantity += item.quantity;
       if (item.endedAt) {
-        d.durations.push((item.endedAt.getTime() - item.startedAt.getTime()) / 60000);
+        // 순수 작업시간(중간마감 차감)
+        d.durations.push(calcNetWorkMinutes(item.startedAt, item.endedAt, item.notes));
       }
       d.workerSet.add(item.startedByWorker.employeeCode);
       for (const a of item.assignments) {
@@ -614,6 +619,7 @@ CBM당 소요시간 기준으로 가장 효율적인/비효율적인 납품처 T
       quantity: number;
       startedAt: Date;
       endedAt: Date | null;
+      notes?: string | null;
       classification: { code: string };
       startedByWorker: { employeeCode: string };
       assignments: Array<{ worker: { employeeCode: string }; role: string }>;
@@ -645,10 +651,10 @@ CBM당 소요시간 기준으로 가장 효율적인/비효율적인 납품처 T
       byWorker[code].totalVolume += Number(w.volume);
     });
 
-    // 작업 시간 통계 (분)
+    // 작업 시간 통계 (분) — 중간마감(pauseHistory) 차감한 순수 작업시간
     const durations = workItems
       .filter((w) => w.endedAt)
-      .map((w) => (w.endedAt!.getTime() - w.startedAt.getTime()) / 60000);
+      .map((w) => calcNetWorkMinutes(w.startedAt, w.endedAt!, w.notes ?? null));
 
     const avgDuration = durations.length > 0
       ? Math.round((durations.reduce((a, b) => a + b, 0) / durations.length) * 10) / 10
