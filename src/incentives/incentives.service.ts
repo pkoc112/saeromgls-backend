@@ -232,6 +232,14 @@ export class IncentivesService {
       managedWorkerAvgScore: 0, exceptionsHandled: 0, teamTotalVoids: 0, teamTotalItems: 0,
     });
 
+    // MANAGER 트랙은 관리자가 WorkItem에 직접 참여하지 않을 수 있으므로,
+    // eligible worker를 미리 등록해서 팀 성과 기반으로 채점 가능하게 함
+    if (track === 'MANAGER') {
+      for (const wid of eligibleWorkerIds) {
+        if (!workerMap.has(wid)) workerMap.set(wid, initStats());
+      }
+    }
+
     for (const item of workItems) {
       const relatedIds = new Set<string>();
       relatedIds.add(item.startedByWorkerId);
@@ -301,9 +309,21 @@ export class IncentivesService {
       throw new BadRequestException(`최소 ${cfg.minWorkers}명 이상 필요합니다 (현재: ${eligibleCount}명, 트랙: ${track})`);
     }
     if (eligibleCount === 0 && workerMap.size > 0) {
-      throw new BadRequestException(`${dto.month}에 ${track} 트랙 작업자가 없습니다. 작업자 관리에서 직무트랙을 설정해주세요.`);
+      const trackNames: Record<string, string> = {
+        OUTBOUND: '출고 전담', INBOUND_DOCK: '입고·상하차', INSPECTION: '검수 전담', MANAGER: '현장 관리자',
+      };
+      throw new BadRequestException(
+        `${dto.month}에 ${trackNames[track] || track} 트랙 작업자가 없습니다. 작업자 관리에서 직무트랙을 ${trackNames[track] || track}으로 설정해주세요.`,
+      );
     }
-    if (workerMap.size === 0) throw new BadRequestException(`${dto.month}에 데이터가 없습니다`);
+    if (workerMap.size === 0) {
+      const trackNames: Record<string, string> = {
+        OUTBOUND: '출고 전담', INBOUND_DOCK: '입고·상하차', INSPECTION: '검수 전담', MANAGER: '현장 관리자',
+      };
+      throw new BadRequestException(
+        `${dto.month}에 ${trackNames[track] || track} 트랙 작업 기록이 없습니다.`,
+      );
+    }
 
     // ── 트랜잭션 (Serializable + 재검증으로 레이스 컨디션 차단) ──
     const scoreRun = await this.prisma.$transaction(async (tx) => {
