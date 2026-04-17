@@ -1,5 +1,17 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsIn, IsOptional, IsString, IsInt, Min, Max, Matches } from 'class-validator';
+import { IsIn, IsInt, IsOptional, IsString, Matches, Max, Min } from 'class-validator';
+
+const INCENTIVE_TRACKS = [
+  'OUTBOUND',
+  'INBOUND_DOCK',
+  'INSPECTION',
+  'MANAGER',
+  'OUTBOUND_RANKED',
+  'INBOUND_SUPPORT',
+  'INSPECTION_GOAL',
+  'DOCK_WRAP_GOAL',
+  'MANAGER_OPS',
+] as const;
 
 export class QueryPolicyDto {
   @ApiProperty({ description: '사업장 ID 필터', required: false })
@@ -18,10 +30,10 @@ export class QueryPolicyDto {
 
   @ApiProperty({
     description: '트랙 필터',
-    enum: ['OUTBOUND_RANKED', 'INBOUND_SUPPORT', 'INSPECTION_GOAL', 'DOCK_WRAP_GOAL', 'MANAGER_OPS'],
+    enum: INCENTIVE_TRACKS,
     required: false,
   })
-  @IsIn(['OUTBOUND_RANKED', 'INBOUND_SUPPORT', 'INSPECTION_GOAL', 'DOCK_WRAP_GOAL', 'MANAGER_OPS'])
+  @IsIn(INCENTIVE_TRACKS)
   @IsOptional()
   track?: string;
 }
@@ -40,7 +52,7 @@ export class QueryScoreRunDto {
   @IsOptional()
   limit?: number;
 
-  @ApiProperty({ description: '대상 월 필터', required: false, example: '2026-04' })
+  @ApiProperty({ description: '월 필터', required: false, example: '2026-04' })
   @IsString()
   @Matches(/^\d{4}-\d{2}$/, { message: '월 형식은 YYYY-MM이어야 합니다' })
   @IsOptional()

@@ -11,32 +11,15 @@ import { CreateScoreRunDto } from './dto/create-score-run.dto';
 import { CreateObjectionDto } from './dto/create-objection.dto';
 import { QueryPolicyDto, QueryScoreRunDto, QueryObjectionDto } from './dto/query-incentives.dto';
 import { Prisma } from '@prisma/client';
+import {
+  safeDiv, clamp, fix2, resolveTrack, getGrade, scaleBands, readPolicyConfig,
+  MIN_WORKERS, MIN_DAYS_WORKED, WORKING_DAYS, VALID_TRACKS, TRACK_MIGRATION, DEFAULT_PAYOUT_BANDS,
+} from './incentive-utils';
 
 // ════════════════════════════════════════════════════════════════
 // 인센티브 점수 엔진 v3
 // ── 4트랙 · 절대평가 · 등급형 지급 · 안전게이트 ──
 // ════════════════════════════════════════════════════════════════
-
-// ── 수학 유틸 ──────────────────────────────────────────────────
-function safeDiv(n: number, d: number, fallback = 0): number { return d > 0 ? n / d : fallback; }
-function clamp(v: number, min: number, max: number): number { return Math.max(min, Math.min(max, v)); }
-function fix2(v: number): number { return Number(v.toFixed(2)); }
-
-// ── 상수 ────────────────────────────────────────────────────────
-const MIN_WORKERS = 3;
-const MIN_DAYS_WORKED = 3;
-const WORKING_DAYS = 22;
-
-// 4트랙 목록 (DOCK_WRAP_GOAL 폐기 → INBOUND_DOCK 통합)
-const VALID_TRACKS = ['OUTBOUND', 'INBOUND_DOCK', 'INSPECTION', 'MANAGER'] as const;
-// 구버전 호환 매핑
-const TRACK_MIGRATION: Record<string, string> = {
-  OUTBOUND_RANKED: 'OUTBOUND',
-  INBOUND_SUPPORT: 'INBOUND_DOCK',
-  INSPECTION_GOAL: 'INSPECTION',
-  DOCK_WRAP_GOAL: 'INBOUND_DOCK', // 상하차→입고에 흡수
-  MANAGER_OPS: 'MANAGER',
-};
 
 // 절대 기준선 (PolicyVersion.details로 사이트별 오버라이드)
 const BASELINES = {
@@ -45,15 +28,6 @@ const BASELINES = {
   inspection: { baseline: 40, coverageBaseline: 2000, targetDefectRate: 0.03 },
   manager: { teamScoreBaseline: 60, exceptionBaseline: 10 },
 };
-
-// 등급형 지급 밴드 (기본값, PolicyVersion.details.payoutBands로 오버라이드)
-const DEFAULT_PAYOUT_BANDS = [
-  { grade: 'A', min: 90, max: 100, amount: 500000 },
-  { grade: 'B', min: 80, max: 89, amount: 400000 },
-  { grade: 'C', min: 70, max: 79, amount: 300000 },
-  { grade: 'D', min: 60, max: 69, amount: 150000 },
-  { grade: 'E', min: 0, max: 59, amount: 0 },
-];
 
 // ── 타입 ────────────────────────────────────────────────────────
 interface ExplanationPerformance { total: number; [key: string]: unknown; }
@@ -91,18 +65,6 @@ interface WorkerStats {
 
 type Weights = { performance: number; reliability: number; teamwork: number };
 type Baselines = Record<string, unknown>;
-
-function resolveTrack(raw: string): string {
-  return TRACK_MIGRATION[raw] || raw;
-}
-
-function getGrade(score: number, bands?: typeof DEFAULT_PAYOUT_BANDS): { grade: string; amount: number } {
-  const b = bands || DEFAULT_PAYOUT_BANDS;
-  for (const band of b) {
-    if (score >= band.min && score <= band.max) return { grade: band.grade, amount: band.amount };
-  }
-  return { grade: 'E', amount: 0 };
-}
 
 @Injectable()
 export class IncentivesService {
@@ -176,7 +138,7 @@ export class IncentivesService {
       throw new BadRequestException('ACTIVE 또는 SHADOW 상태의 정책만 실행할 수 있습니다');
     }
 
-    // 중복 방지
+    // 중복 방지 (트랜잭션 밖 사전 체크 — UX용)
     const existingRun = await this.prisma.scoreRun.findFirst({
       where: { siteId, policyVersionId: dto.policyVersionId, month: dto.month, status: { notIn: ['FINALIZED'] } },
     });
@@ -188,12 +150,15 @@ export class IncentivesService {
     let weights: Weights;
     try { weights = JSON.parse(policyVersion.weights); } catch { throw new BadRequestException('가중치 JSON 파싱 실패'); }
 
-    // 세부 설정 (baselines, payoutBands 오버라이드)
+    // 세부 설정 (baselines, payoutBands, workingDays, minWorkers 등 사이트별 오버라이드)
     let policyDetails: Baselines = {};
     if (policyVersion.details) {
       try { policyDetails = JSON.parse(policyVersion.details); } catch { /* ignore */ }
     }
-    const payoutBands = (policyDetails as any).payoutBands || DEFAULT_PAYOUT_BANDS;
+    const cfg = readPolicyConfig(policyDetails);
+    const payoutBands = cfg.payoutBands;
+    // baselines에 workingDays 주입 (scoreOutbound/scoreInbound 등에서 사용)
+    (policyDetails as any).__workingDays = cfg.workingDays;
 
     // 트랙 해석 (구버전 호환)
     const track = resolveTrack(policyVersion.track);
@@ -311,13 +276,21 @@ export class IncentivesService {
     }
 
     // 최소 표본
-    if (track !== 'MANAGER' && workerMap.size < MIN_WORKERS) {
-      throw new BadRequestException(`최소 ${MIN_WORKERS}명 이상 필요합니다 (현재: ${workerMap.size}명)`);
+    if (track !== 'MANAGER' && workerMap.size < cfg.minWorkers) {
+      throw new BadRequestException(`최소 ${cfg.minWorkers}명 이상 필요합니다 (현재: ${workerMap.size}명)`);
     }
     if (workerMap.size === 0) throw new BadRequestException(`${dto.month}에 데이터가 없습니다`);
 
-    // ── 트랜잭션 ──
+    // ── 트랜잭션 (Serializable + 재검증으로 레이스 컨디션 차단) ──
     const scoreRun = await this.prisma.$transaction(async (tx) => {
+      // 트랜잭션 내부 재검증: 다른 요청이 동시에 생성 중일 수 있음
+      const duplicateInTx = await tx.scoreRun.findFirst({
+        where: { siteId, policyVersionId: dto.policyVersionId, month: dto.month, status: { notIn: ['FINALIZED'] } },
+      });
+      if (duplicateInTx) {
+        throw new BadRequestException(`동일 월(${dto.month})/정책으로 진행 중인 실행이 있습니다 (ID: ${duplicateInTx.id})`);
+      }
+
       const run = await tx.scoreRun.create({
         data: {
           siteId, policyVersionId: dto.policyVersionId, month: dto.month,
@@ -328,12 +301,12 @@ export class IncentivesService {
 
       const entries: WorkerScoreData[] = [];
       for (const [workerId, stats] of workerMap.entries()) {
-        if (stats.daysWorked.size < MIN_DAYS_WORKED && track !== 'MANAGER') {
+        if (stats.daysWorked.size < cfg.minDaysWorked && track !== 'MANAGER') {
           await tx.scoreEntry.create({
             data: {
               scoreRunId: run.id, workerId, track: policyVersion.track,
               performanceScore: 0, reliabilityScore: 0, teamworkScore: 0, totalScore: 0,
-              details: JSON.stringify({ track, excluded: true, reason: `근무일수 부족 (${stats.daysWorked.size}/${MIN_DAYS_WORKED}일)` }),
+              details: JSON.stringify({ track, excluded: true, reason: `근무일수 부족 (${stats.daysWorked.size}/${cfg.minDaysWorked}일)` }),
             },
           });
           continue;
@@ -362,6 +335,11 @@ export class IncentivesService {
       }
 
       return run;
+    }, {
+      // Serializable: 동시 요청 시 한 쪽 트랜잭션이 먼저 커밋되고 나머지는 재검증에서 차단됨
+      isolationLevel: 'Serializable',
+      maxWait: 5000,
+      timeout: 30000,
     });
 
     this.logger.log(`ScoreRun created: ${scoreRun.id} (${dto.month}, ${track}, ${workerMap.size} workers)`);
@@ -401,7 +379,7 @@ export class IncentivesService {
 
     // 효율성: CBM/시간 (30점)
     const eff = safeDiv(stats.totalVolume, stats.totalHoursWorked);
-    const avgEffBaseline = safeDiv(vpm, WORKING_DAYS); // 월기준 일평균 CBM
+    const avgEffBaseline = safeDiv(vpm, (baselines as any).__workingDays || WORKING_DAYS); // 월기준 일평균 CBM
     const effScore = fix2(clamp(safeDiv(eff, avgEffBaseline), 0, 2) * 15); // 0-30
 
     // 물동량: 총 CBM (30점)
@@ -410,7 +388,7 @@ export class IncentivesService {
     const performanceScore = fix2(clamp(throughputScore + effScore + volScore, 0, 100));
 
     // ── 신뢰도 (0~100) ──
-    const attendScore = fix2(clamp(safeDiv(stats.daysWorked.size, WORKING_DAYS) * 50, 0, 50));
+    const attendScore = fix2(clamp(safeDiv(stats.daysWorked.size, (baselines as any).__workingDays || WORKING_DAYS) * 50, 0, 50));
     const voidRate = safeDiv(stats.voidCount, stats.totalCount);
     const editRate = safeDiv(stats.editCount, stats.totalCount);
     const voidPen = fix2(clamp(voidRate * 250, 0, 25));
@@ -463,7 +441,7 @@ export class IncentivesService {
     const performanceScore = fix2(clamp(sessScore + qtyScore + outScore + accScore, 0, 100));
 
     // ── 신뢰도 ──
-    const attendScore = fix2(clamp(safeDiv(stats.daysWorked.size, WORKING_DAYS) * 50, 0, 50));
+    const attendScore = fix2(clamp(safeDiv(stats.daysWorked.size, (baselines as any).__workingDays || WORKING_DAYS) * 50, 0, 50));
     const voidRate = safeDiv(stats.voidCount, stats.totalCount);
     const editRate = safeDiv(stats.editCount, stats.totalCount);
     const voidPen = fix2(clamp(voidRate * 200, 0, 25));
@@ -518,7 +496,7 @@ export class IncentivesService {
     const performanceScore = fix2(clamp(throughputScore + detectionScore + coverageScore, 0, 100));
 
     // ── 신뢰도 ──
-    const attendScore = fix2(clamp(safeDiv(stats.daysWorked.size, WORKING_DAYS) * 60, 0, 60));
+    const attendScore = fix2(clamp(safeDiv(stats.daysWorked.size, (baselines as any).__workingDays || WORKING_DAYS) * 60, 0, 60));
     const voidRate = safeDiv(stats.voidCount, stats.totalCount);
     const editRate = safeDiv(stats.editCount, stats.totalCount);
     const voidPen = fix2(clamp(voidRate * 200, 0, 20));
@@ -554,12 +532,12 @@ export class IncentivesService {
 
     const teamOutputScore = fix2(clamp(safeDiv(stats.managedWorkerAvgScore, teamBase) * 35, 0, 35));
     const exceptionScore = fix2(clamp(safeDiv(stats.exceptionsHandled, excBase), 0, 2) * 17.5);
-    const coverageScore = fix2(clamp(safeDiv(stats.daysWorked.size, WORKING_DAYS) * 30, 0, 30));
+    const coverageScore = fix2(clamp(safeDiv(stats.daysWorked.size, (baselines as any).__workingDays || WORKING_DAYS) * 30, 0, 30));
     const performanceScore = fix2(clamp(teamOutputScore + exceptionScore + coverageScore, 0, 100));
 
     const teamVoidRate = safeDiv(stats.teamTotalVoids, stats.teamTotalItems);
     const teamQuality = fix2(clamp((1 - teamVoidRate * 10) * 50, 0, 50));
-    const attendScore = fix2(clamp(safeDiv(stats.daysWorked.size, WORKING_DAYS) * 25, 0, 25));
+    const attendScore = fix2(clamp(safeDiv(stats.daysWorked.size, (baselines as any).__workingDays || WORKING_DAYS) * 25, 0, 25));
     const reliabilityScore = fix2(clamp(teamQuality + attendScore + 25, 0, 100)); // +25 일관성 기본점
 
     const activityScore = fix2(clamp(stats.exceptionsHandled * 3, 0, 60));

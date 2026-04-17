@@ -124,6 +124,7 @@ model Worker {
   dockParticipations DockParticipant[]  @relation("DockParticipant")
   scoreEntries       ScoreEntry[]       @relation("ScoreEntries")
   objections         ObjectionCase[]    @relation("Objections")
+  payoutEntries      PayoutEntry[]      @relation("PayoutEntries")
 
   @@index([siteId])
   @@index([status, role])
@@ -604,10 +605,12 @@ model ScoreRun {
   site          Site           @relation(fields: [siteId], references: [id])
   policyVersion PolicyVersion  @relation(fields: [policyVersionId], references: [id])
   entries       ScoreEntry[]
+  payoutBatches PayoutBatch[]
 
   @@index([siteId])
   @@index([month])
   @@index([status])
+  @@index([siteId, month])
   @@map("score_runs")
 }
 
@@ -678,25 +681,51 @@ model ApprovalLog {
 
 /// 지급 배치
 model PayoutBatch {
-  id           String    @id @default(uuid())
-  siteId       String    @map("site_id")
-  scoreRunId   String    @map("score_run_id")
-  month        String
-  status       String    @default("DRAFT") // DRAFT, APPROVED, PAID, CANCELLED
-  totalAmount  Decimal   @default(0) @db.Decimal(12, 0) @map("total_amount")
-  workerCount  Int       @default(0) @map("worker_count")
-  approvedBy   String?   @map("approved_by")
-  approvedAt   DateTime? @map("approved_at")
-  paidAt       DateTime? @map("paid_at")
-  notes        String?
-  createdAt    DateTime  @default(now()) @map("created_at")
+  id            String    @id @default(uuid())
+  siteId        String    @map("site_id")
+  scoreRunId    String    @map("score_run_id")
+  month         String
+  status        String    @default("DRAFT") // DRAFT, APPROVED, PAID, CANCELLED
+  totalAmount   Decimal   @default(0) @db.Decimal(12, 0) @map("total_amount")
+  workerCount   Int       @default(0) @map("worker_count")
+  baseIncentive Decimal   @default(500000) @db.Decimal(12, 0) @map("base_incentive")
+  approvedBy    String?   @map("approved_by")
+  approvedAt    DateTime? @map("approved_at")
+  paidAt        DateTime? @map("paid_at")
+  notes         String?
+  createdAt     DateTime  @default(now()) @map("created_at")
 
-  site Site @relation(fields: [siteId], references: [id])
+  site     Site          @relation(fields: [siteId], references: [id])
+  scoreRun ScoreRun      @relation(fields: [scoreRunId], references: [id])
+  entries  PayoutEntry[]
 
   @@index([siteId])
   @@index([month])
   @@index([status])
+  @@index([scoreRunId])
   @@map("payout_batches")
+}
+
+/// 개인별 지급 명세 — 분쟁 시 근거 보존용
+model PayoutEntry {
+  id             String  @id @default(uuid())
+  payoutBatchId  String  @map("payout_batch_id")
+  workerId       String  @map("worker_id")
+  track          String
+  totalScore     Decimal @default(0) @db.Decimal(5, 2) @map("total_score")
+  grade          String  // A, B, C, D, E
+  amount         Decimal @default(0) @db.Decimal(12, 0)
+  snapshotBands  String? @map("snapshot_bands") // JSON: 지급 시점 밴드 스냅샷
+  note           String?
+  createdAt      DateTime @default(now()) @map("created_at")
+
+  payoutBatch PayoutBatch @relation(fields: [payoutBatchId], references: [id], onDelete: Cascade)
+  worker      Worker      @relation("PayoutEntries", fields: [workerId], references: [id], onDelete: Restrict)
+
+  @@unique([payoutBatchId, workerId])
+  @@index([workerId])
+  @@index([payoutBatchId])
+  @@map("payout_entries")
 }
 
 // ================================================================

@@ -1,10 +1,17 @@
 import { ApiProperty } from '@nestjs/swagger';
-import {
-  IsNotEmpty,
-  IsOptional,
-  IsString,
-  IsIn,
-} from 'class-validator';
+import { IsIn, IsNotEmpty, IsOptional, IsString } from 'class-validator';
+
+const INCENTIVE_TRACKS = [
+  'OUTBOUND',
+  'INBOUND_DOCK',
+  'INSPECTION',
+  'MANAGER',
+  'OUTBOUND_RANKED',
+  'INBOUND_SUPPORT',
+  'INSPECTION_GOAL',
+  'DOCK_WRAP_GOAL',
+  'MANAGER_OPS',
+] as const;
 
 export class CreatePolicyDto {
   @ApiProperty({
@@ -17,12 +24,9 @@ export class CreatePolicyDto {
 
   @ApiProperty({
     description: '직무 트랙',
-    enum: ['OUTBOUND_RANKED', 'INBOUND_SUPPORT', 'INSPECTION_GOAL', 'DOCK_WRAP_GOAL', 'MANAGER_OPS'],
+    enum: INCENTIVE_TRACKS,
   })
-  @IsIn(
-    ['OUTBOUND_RANKED', 'INBOUND_SUPPORT', 'INSPECTION_GOAL', 'DOCK_WRAP_GOAL', 'MANAGER_OPS'],
-    { message: '유효한 직무 트랙을 선택해주세요' },
-  )
+  @IsIn(INCENTIVE_TRACKS, { message: '유효한 직무 트랙을 선택해주세요' })
   @IsNotEmpty({ message: '직무 트랙을 선택해주세요' })
   track: string;
 
