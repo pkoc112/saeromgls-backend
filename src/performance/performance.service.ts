@@ -47,9 +47,9 @@ export class PerformanceService {
     const weightVolume = policy?.scoreWeightVolume ?? 2;
     const weightQuantity = policy?.scoreWeightQuantity ?? 0.05;
 
-    // 사업장 필터 조건
+    // 사업장 필터 조건 (siteId NULL 작업자도 포함 — CLAUDE.md 함정 #11)
     const siteFilter = siteId
-      ? Prisma.sql`AND w.site_id = ${siteId}`
+      ? Prisma.sql`AND (w.site_id = ${siteId} OR w.site_id IS NULL)`
       : Prisma.empty;
 
     // 작업자별 집계 (시작자 + 공동작업자 모두 포함)
@@ -221,14 +221,14 @@ export class PerformanceService {
     const totalQuantity = aggregates._sum.quantity ?? 0;
     const workerCount = distinctWorkers.length;
 
+    // 작업자별 평균 기반 생산성 점수 (전체 합계가 아닌 1인당 평균)
+    const avgCount = workerCount > 0 ? totalCount / workerCount : 0;
+    const avgVolume = workerCount > 0 ? totalVolume / workerCount : 0;
+    const avgQuantity = workerCount > 0 ? Number(totalQuantity) / workerCount : 0;
     const avgScore =
-      workerCount > 0
-        ? Math.round(
-            ((totalCount * weightCount + totalVolume * weightVolume + totalQuantity * weightQuantity) /
-              workerCount) *
-              100,
-          ) / 100
-        : 0;
+      Math.round(
+        (avgCount * weightCount + avgVolume * weightVolume + avgQuantity * weightQuantity) * 100,
+      ) / 100;
 
     return {
       period: { from, to },
