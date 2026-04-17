@@ -529,7 +529,7 @@ CBM당 소요시간 기준으로 가장 효율적인/비효율적인 납품처 T
       try {
         const response = await this.client.messages.create({
           model: 'claude-opus-4-6',
-          max_tokens: 4096,
+          max_tokens: 16384, // 긴 분석 보고서(난이도/인력배치 테이블 포함) 대응
           messages: [
             {
               role: 'user',
@@ -539,8 +539,17 @@ CBM당 소요시간 기준으로 가장 효율적인/비효율적인 납품처 T
           system:
             '당신은 현장 작업 데이터 분석 전문가입니다. ' +
             '한국어로 답변하며, 데이터 기반의 객관적 분석을 제공합니다. ' +
-            '개인정보 보호를 위해 작업자는 사번으로만 언급합니다.',
+            '개인정보 보호를 위해 작업자는 사번으로만 언급합니다. ' +
+            '테이블을 작성할 때는 반드시 헤더와 구분선 이후 데이터 행을 완전히 작성하고, ' +
+            '중간에 끊지 않습니다. 토큰 한도가 가까워지면 테이블을 시작하지 말고 다음 번에 완결된 섹션으로 마무리하세요.',
         });
+
+        // 응답이 max_tokens로 잘렸는지 확인
+        if (response.stop_reason === 'max_tokens') {
+          this.logger.warn(
+            `AI 응답이 max_tokens 한도(16384)에 걸려 잘렸습니다. 프롬프트 축약 또는 섹션 분할 필요.`,
+          );
+        }
 
         // 텍스트 응답 추출
         const textBlock = response.content.find((block) => block.type === 'text');
