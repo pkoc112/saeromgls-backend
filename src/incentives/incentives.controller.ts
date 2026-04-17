@@ -178,6 +178,18 @@ export class IncentivesController {
     return this.incentivesService.createScoreRun(siteId, dto);
   }
 
+  @Post('score-runs/run-all')
+  @Roles('ADMIN')
+  @ApiOperation({ summary: '4트랙 전체 점수 일괄 실행 (해당 월의 ACTIVE/SHADOW 정책 각각 실행)' })
+  runAllTracks(
+    @Query('siteId') querySiteId: string | undefined,
+    @Body('month') month: string,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    const siteId = this.requireSiteId(user, querySiteId);
+    return this.incentivesService.runAllTracks(siteId, month);
+  }
+
   @Get('score-runs')
   @Roles('ADMIN')
   @ApiOperation({ summary: '점수 실행 목록 조회' })

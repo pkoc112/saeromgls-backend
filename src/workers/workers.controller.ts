@@ -59,6 +59,21 @@ export class WorkersController {
     return this.workersService.findAll({ page, limit, status, siteId });
   }
 
+  @Post('admin/workers/migrate-tracks-v3')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN')
+  @ApiBearerAuth('jwt')
+  @ApiTags('Admin Workers')
+  @ApiOperation({ summary: '작업자 jobTrack 구 5트랙 → 신 4트랙 마이그레이션' })
+  @ApiResponse({ status: 200, description: '마이그레이션 완료' })
+  async migrateJobTracksV3(
+    @CurrentUser() user: JwtPayload,
+    @Query('siteId') querySiteId?: string,
+  ) {
+    const siteId = resolveSiteId(user, querySiteId);
+    return this.workersService.migrateJobTracksV3(siteId);
+  }
+
   @Post('admin/workers')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN')

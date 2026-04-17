@@ -19,6 +19,49 @@ export class WorkersService {
   constructor(private readonly prisma: PrismaService) {}
 
   /**
+   * 작업자 jobTrack 구 5트랙 → 신 4트랙 일괄 마이그레이션
+   * - OUTBOUND_RANKED   → OUTBOUND
+   * - INBOUND_SUPPORT   → INBOUND_DOCK
+   * - DOCK_WRAP_GOAL    → INBOUND_DOCK (상하차 흡수)
+   * - INSPECTION_GOAL   → INSPECTION
+   * - MANAGER_OPS       → MANAGER
+   */
+  async migrateJobTracksV3(siteId?: string) {
+    const mapping: Record<string, string> = {
+      OUTBOUND_RANKED: 'OUTBOUND',
+      INBOUND_SUPPORT: 'INBOUND_DOCK',
+      DOCK_WRAP_GOAL:  'INBOUND_DOCK',
+      INSPECTION_GOAL: 'INSPECTION',
+      MANAGER_OPS:     'MANAGER',
+    };
+
+    const siteFilter = siteId
+      ? { OR: [{ siteId }, { siteId: null }] }
+      : {};
+
+    const results: Array<{ from: string; to: string; count: number }> = [];
+    let totalUpdated = 0;
+
+    for (const [oldTrack, newTrack] of Object.entries(mapping)) {
+      const res = await this.prisma.worker.updateMany({
+        where: { ...siteFilter, jobTrack: oldTrack },
+        data: { jobTrack: newTrack },
+      });
+      if (res.count > 0) {
+        results.push({ from: oldTrack, to: newTrack, count: res.count });
+        totalUpdated += res.count;
+      }
+    }
+
+    this.logger.log(`jobTrack migration v3: ${totalUpdated} workers updated`);
+    return {
+      message: `작업자 ${totalUpdated}명의 직무트랙이 신 4트랙으로 마이그레이션되었습니다`,
+      totalUpdated,
+      details: results,
+    };
+  }
+
+  /**
    * 관리자용: 작업자 목록 조회 (페이지네이션, 상태/사업장 필터)
    */
   async findAll(params: {

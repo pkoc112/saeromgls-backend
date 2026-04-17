@@ -168,6 +168,24 @@ export class IncentivesService {
     const monthEnd = kstEndOfDay(`${dto.month}-${String(lastDay).padStart(2, '0')}`);
     const siteFilterDirect = siteId ? { siteId } : {};
 
+    // 해당 트랙의 jobTrack을 가진 작업자 ID 목록 (신+구 트랙 호환)
+    const trackAliases: Record<string, string[]> = {
+      OUTBOUND: ['OUTBOUND', 'OUTBOUND_RANKED'],
+      INBOUND_DOCK: ['INBOUND_DOCK', 'INBOUND_SUPPORT', 'DOCK_WRAP_GOAL'],
+      INSPECTION: ['INSPECTION', 'INSPECTION_GOAL'],
+      MANAGER: ['MANAGER', 'MANAGER_OPS'],
+    };
+    const acceptedJobTracks = trackAliases[track] || [track];
+    const eligibleWorkers = await this.prisma.worker.findMany({
+      where: {
+        jobTrack: { in: acceptedJobTracks },
+        ...(siteId ? { OR: [{ siteId }, { siteId: null }] } : {}),
+      },
+      select: { id: true },
+    });
+    const eligibleWorkerIds = new Set(eligibleWorkers.map((w) => w.id));
+    this.logger.log(`Track ${track}: ${eligibleWorkerIds.size} eligible workers by jobTrack`);
+
     // ── 데이터 수집 ──
 
     // 1. 작업 기록 (출고 + 모든 참여)
@@ -275,9 +293,15 @@ export class IncentivesService {
       }
     }
 
-    // 최소 표본
-    if (track !== 'MANAGER' && workerMap.size < cfg.minWorkers) {
-      throw new BadRequestException(`최소 ${cfg.minWorkers}명 이상 필요합니다 (현재: ${workerMap.size}명)`);
+    // eligible 작업자만 세서 최소 표본 체크
+    const eligibleCount = eligibleWorkerIds.size > 0
+      ? [...workerMap.keys()].filter((id) => eligibleWorkerIds.has(id)).length
+      : workerMap.size;
+    if (track !== 'MANAGER' && eligibleCount < cfg.minWorkers) {
+      throw new BadRequestException(`최소 ${cfg.minWorkers}명 이상 필요합니다 (현재: ${eligibleCount}명, 트랙: ${track})`);
+    }
+    if (eligibleCount === 0 && workerMap.size > 0) {
+      throw new BadRequestException(`${dto.month}에 ${track} 트랙 작업자가 없습니다. 작업자 관리에서 직무트랙을 설정해주세요.`);
     }
     if (workerMap.size === 0) throw new BadRequestException(`${dto.month}에 데이터가 없습니다`);
 
@@ -301,6 +325,10 @@ export class IncentivesService {
 
       const entries: WorkerScoreData[] = [];
       for (const [workerId, stats] of workerMap.entries()) {
+        // jobTrack이 해당 트랙과 다른 작업자는 제외 (신+구 트랙 호환)
+        if (eligibleWorkerIds.size > 0 && !eligibleWorkerIds.has(workerId)) {
+          continue;
+        }
         if (stats.daysWorked.size < cfg.minDaysWorked && track !== 'MANAGER') {
           await tx.scoreEntry.create({
             data: {
@@ -555,6 +583,58 @@ export class IncentivesService {
         reliability: { total: reliabilityScore, teamQuality: { voidRate: fix2(teamVoidRate * 100), score: teamQuality }, attendance: { days: stats.daysWorked.size, score: attendScore } },
         teamwork: { total: teamworkScore, managementActivity: activityScore, crossSupport: crossScore },
       },
+    };
+  }
+
+  // ════════════════════════════════════════════════════════════════
+  // 4트랙 전체 일괄 실행
+  // ════════════════════════════════════════════════════════════════
+
+  /**
+   * 해당 사이트의 ACTIVE/SHADOW 상태 정책 전체를 순차로 실행한다.
+   * - 각 정책별로 createScoreRun 호출
+   * - 실패한 트랙은 결과에 포함하되 전체 실행은 계속
+   */
+  async runAllTracks(siteId: string, month: string) {
+    if (!month || !/^\d{4}-\d{2}$/.test(month)) {
+      throw new BadRequestException('month는 YYYY-MM 형식이어야 합니다');
+    }
+
+    const policies = await this.prisma.policyVersion.findMany({
+      where: {
+        siteId,
+        status: { in: ['ACTIVE', 'SHADOW'] },
+        track: { in: [...VALID_TRACKS] as string[] },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    // 트랙별로 가장 최신 정책 1개씩만 (동일 트랙 중복 시 제일 최근 것)
+    const seen = new Set<string>();
+    const latestByTrack: typeof policies = [];
+    for (const p of policies) {
+      const t = resolveTrack(p.track);
+      if (!seen.has(t)) {
+        seen.add(t);
+        latestByTrack.push(p);
+      }
+    }
+
+    const results: Array<{ track: string; status: 'success' | 'failed'; runId?: string; error?: string }> = [];
+    for (const policy of latestByTrack) {
+      try {
+        const run = await this.createScoreRun(siteId, { policyVersionId: policy.id, month });
+        results.push({ track: resolveTrack(policy.track), status: 'success', runId: (run as any)?.id });
+      } catch (e: any) {
+        results.push({ track: resolveTrack(policy.track), status: 'failed', error: e?.message || String(e) });
+      }
+    }
+
+    const successCount = results.filter((r) => r.status === 'success').length;
+    return {
+      message: `${month} 전체 트랙 실행 완료 — 성공 ${successCount}/${results.length}트랙`,
+      month,
+      results,
     };
   }
 
