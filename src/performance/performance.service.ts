@@ -47,9 +47,9 @@ export class PerformanceService {
     const weightVolume = policy?.scoreWeightVolume ?? 2;
     const weightQuantity = policy?.scoreWeightQuantity ?? 0.05;
 
-    // 사업장 필터 조건 (siteId NULL 작업자도 포함 — CLAUDE.md 함정 #11)
-    const siteFilter = siteId
-      ? Prisma.sql`AND (w.site_id = ${siteId} OR w.site_id IS NULL)`
+    // 사업장 필터: CTE 이후 workers JOIN 시점에 적용 (NULL 작업자 포함 — 함정 #11)
+    const workerSiteFilter = siteId
+      ? Prisma.sql`WHERE (w.site_id = ${siteId} OR w.site_id IS NULL)`
       : Prisma.empty;
 
     // 작업자별 집계 (시작자 + 공동작업자 모두 포함)
@@ -73,7 +73,6 @@ export class PerformanceService {
         FROM work_items wi
         WHERE wi.status = 'ENDED' AND wi.ended_at IS NOT NULL
           AND wi.started_at >= ${fromDate} AND wi.started_at <= ${toDate}
-          ${siteFilter}
         UNION ALL
         -- 공동 작업자
         SELECT wi.id as work_item_id, wa.worker_id,
@@ -82,7 +81,6 @@ export class PerformanceService {
         JOIN work_assignments wa ON wa.work_item_id = wi.id AND wa.role != 'STARTER'
         WHERE wi.status = 'ENDED' AND wi.ended_at IS NOT NULL
           AND wi.started_at >= ${fromDate} AND wi.started_at <= ${toDate}
-          ${siteFilter}
       )
       SELECT
         w.id as worker_id,
@@ -91,10 +89,11 @@ export class PerformanceService {
         COUNT(DISTINCT ap.work_item_id) as completed_count,
         COALESCE(SUM(ap.volume), 0) as total_volume,
         COALESCE(SUM(ap.quantity), 0) as total_quantity,
-        AVG(EXTRACT(EPOCH FROM (ap.ended_at - ap.started_at)) / 60.0) as avg_duration_minutes,
+        AVG(GREATEST(EXTRACT(EPOCH FROM (ap.ended_at - ap.started_at)), 0) / 60.0) as avg_duration_minutes,
         COUNT(DISTINCT CASE WHEN ap.is_coworker THEN ap.work_item_id END) as co_work_count
       FROM all_participations ap
       JOIN workers w ON w.id = ap.worker_id
+      ${workerSiteFilter}
       GROUP BY w.id, w.name, w.employee_code
       ORDER BY completed_count DESC
     `;
