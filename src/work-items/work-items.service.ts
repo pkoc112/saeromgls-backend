@@ -17,6 +17,8 @@ import { QueryWorkItemsDto } from './dto/query-work-items.dto';
 import { Prisma } from '@prisma/client';
 
 import { calcNetWorkMinutes } from '../common/utils/net-work-minutes';
+import { assertWorkItemOwnership } from '../common/utils/work-item-ownership';
+import type { JwtPayload } from '../common/decorators/current-user.decorator';
 
 @Injectable()
 export class WorkItemsService {
@@ -198,7 +200,7 @@ export class WorkItemsService {
    * 모바일: 작업 종료
    * 종료 시 물량/수량 확정, 추가 참여자 등록 가능
    */
-  async endWorkItem(id: string, dto: EndWorkItemDto, ip?: string, userAgent?: string) {
+  async endWorkItem(id: string, dto: EndWorkItemDto, ip?: string, userAgent?: string, requester?: JwtPayload) {
     const workItem = await this.prisma.workItem.findUnique({
       where: { id },
       include: { assignments: true },
@@ -206,6 +208,16 @@ export class WorkItemsService {
 
     if (!workItem) {
       throw new NotFoundException('작업을 찾을 수 없습니다');
+    }
+
+    // P0-4: 소유자 검증 — 주작업자/배정 참여자 또는 관리자만
+    if (requester) {
+      assertWorkItemOwnership({
+        requesterId: requester.sub,
+        requesterRole: requester.role,
+        workItem,
+        dtoWorkerId: (dto as any).endedByWorkerId,
+      });
     }
 
     if (workItem.status !== 'ACTIVE' && workItem.status !== 'PAUSED') {
@@ -268,11 +280,24 @@ export class WorkItemsService {
    * 모바일: 작업 중간마감 (일시정지)
    * ACTIVE -> PAUSED 상태로 변경, pausedAt 시각을 notes에 JSON으로 기록
    */
-  async pauseWorkItem(id: string, dto: PauseWorkItemDto, ip?: string, userAgent?: string) {
-    const workItem = await this.prisma.workItem.findUnique({ where: { id } });
+  async pauseWorkItem(id: string, dto: PauseWorkItemDto, ip?: string, userAgent?: string, requester?: JwtPayload) {
+    const workItem = await this.prisma.workItem.findUnique({
+      where: { id },
+      include: { assignments: true },
+    });
 
     if (!workItem) {
       throw new NotFoundException('작업을 찾을 수 없습니다');
+    }
+
+    // P0-4: 소유자 검증
+    if (requester) {
+      assertWorkItemOwnership({
+        requesterId: requester.sub,
+        requesterRole: requester.role,
+        workItem,
+        dtoWorkerId: (dto as any).pausedByWorkerId,
+      });
     }
 
     if (workItem.status !== 'ACTIVE') {
@@ -332,11 +357,24 @@ export class WorkItemsService {
    * 모바일: 중간마감 해제 (이어하기)
    * PAUSED -> ACTIVE 상태로 변경
    */
-  async resumeWorkItem(id: string, resumedByWorkerId: string, ip?: string, userAgent?: string) {
-    const workItem = await this.prisma.workItem.findUnique({ where: { id } });
+  async resumeWorkItem(id: string, resumedByWorkerId: string, ip?: string, userAgent?: string, requester?: JwtPayload) {
+    const workItem = await this.prisma.workItem.findUnique({
+      where: { id },
+      include: { assignments: true },
+    });
 
     if (!workItem) {
       throw new NotFoundException('작업을 찾을 수 없습니다');
+    }
+
+    // P0-4: 소유자 검증 (이어하기 하는 작업자가 권한 있는지)
+    if (requester) {
+      assertWorkItemOwnership({
+        requesterId: requester.sub,
+        requesterRole: requester.role,
+        workItem,
+        dtoWorkerId: resumedByWorkerId,
+      });
     }
 
     if (workItem.status !== 'PAUSED') {
@@ -730,9 +768,22 @@ export class WorkItemsService {
    * 모바일: 작업 무효화 (VOID)
    * 작업 시작자를 actor로 사용
    */
-  async voidWorkItemFromMobile(id: string, ip?: string, userAgent?: string) {
-    const workItem = await this.prisma.workItem.findUnique({ where: { id } });
+  async voidWorkItemFromMobile(id: string, ip?: string, userAgent?: string, requester?: JwtPayload) {
+    const workItem = await this.prisma.workItem.findUnique({
+      where: { id },
+      include: { assignments: true },
+    });
     if (!workItem) throw new NotFoundException('작업을 찾을 수 없습니다');
+
+    // P0-4: 소유자 검증 (모바일에서 타인의 작업 무효화 방지)
+    if (requester) {
+      assertWorkItemOwnership({
+        requesterId: requester.sub,
+        requesterRole: requester.role,
+        workItem,
+      });
+    }
+
     if (workItem.status === 'VOID') throw new BadRequestException('이미 무효화된 작업입니다');
 
     const beforeState = JSON.stringify(workItem);

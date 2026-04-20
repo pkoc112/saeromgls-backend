@@ -532,6 +532,7 @@ CBM당 소요시간 기준으로 가장 효율적인/비효율적인 납품처 T
 
     for (let attempt = 1; attempt <= maxRetries; attempt++) {
       try {
+        // P0-6: Vercel serverless 60초 제한 대응 — Claude 호출을 55초 내 강제 완료
         const response = await this.client.messages.create({
           model: 'claude-opus-4-6',
           max_tokens: 16384, // 긴 분석 보고서(난이도/인력배치 테이블 포함) 대응
@@ -547,6 +548,9 @@ CBM당 소요시간 기준으로 가장 효율적인/비효율적인 납품처 T
             '개인정보 보호를 위해 작업자는 사번으로만 언급합니다. ' +
             '테이블을 작성할 때는 반드시 헤더와 구분선 이후 데이터 행을 완전히 작성하고, ' +
             '중간에 끊지 않습니다. 토큰 한도가 가까워지면 테이블을 시작하지 말고 다음 번에 완결된 섹션으로 마무리하세요.',
+        }, {
+          timeout: 55000, // 55s (Vercel 60s 제한 5s 여유)
+          maxRetries: 0, // SDK 내부 재시도 비활성 (우리 재시도 루프만 사용)
         });
 
         // 응답이 max_tokens로 잘렸는지 확인

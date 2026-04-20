@@ -101,10 +101,11 @@ export class WorkItemsController {
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: EndWorkItemDto,
     @Req() req: Request,
+    @CurrentUser() user: JwtPayload,
   ) {
     const ip = req.ip || req.socket.remoteAddress;
     const userAgent = req.headers['user-agent'];
-    return this.workItemsService.endWorkItem(id, dto, ip, userAgent);
+    return this.workItemsService.endWorkItem(id, dto, ip, userAgent, user);
   }
 
   @Post('mobile/work-items/:id/pause')
@@ -122,10 +123,11 @@ export class WorkItemsController {
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: PauseWorkItemDto,
     @Req() req: Request,
+    @CurrentUser() user: JwtPayload,
   ) {
     const ip = req.ip || req.socket.remoteAddress;
     const userAgent = req.headers['user-agent'];
-    return this.workItemsService.pauseWorkItem(id, dto, ip, userAgent);
+    return this.workItemsService.pauseWorkItem(id, dto, ip, userAgent, user);
   }
 
   @Post('mobile/work-items/:id/resume')
@@ -148,10 +150,11 @@ export class WorkItemsController {
     @Param('id', ParseUUIDPipe) id: string,
     @Query('resumedByWorkerId') resumedByWorkerId: string,
     @Req() req: Request,
+    @CurrentUser() user: JwtPayload,
   ) {
     const ip = req.ip || req.socket.remoteAddress;
     const userAgent = req.headers['user-agent'];
-    return this.workItemsService.resumeWorkItem(id, resumedByWorkerId, ip, userAgent);
+    return this.workItemsService.resumeWorkItem(id, resumedByWorkerId, ip, userAgent, user);
   }
 
   @Delete('mobile/work-items/:id')
@@ -162,10 +165,11 @@ export class WorkItemsController {
   deleteWorkItemMobile(
     @Param('id', ParseUUIDPipe) id: string,
     @Req() req: Request,
+    @CurrentUser() user: JwtPayload,
   ) {
     const ip = req.ip || req.socket.remoteAddress;
     const userAgent = req.headers['user-agent'];
-    return this.workItemsService.voidWorkItemFromMobile(id, ip, userAgent);
+    return this.workItemsService.voidWorkItemFromMobile(id, ip, userAgent, user);
   }
 
   // ===================== Admin Endpoints =====================

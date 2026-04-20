@@ -10,9 +10,25 @@ async function bootstrap() {
   // 전역 API 접두사
   app.setGlobalPrefix('api');
 
-  // CORS 설정 - 모든 origin 허용 (ngrok + Vercel + localhost)
+  // P0-1: CORS allowlist — CSRF 방어 (이전 `origin: true`는 모든 도메인 허용)
+  const allowedOrigins = [
+    'https://sae-work.com',
+    'https://www.sae-work.com',
+    'https://saeromgls-dashboard.vercel.app',
+    /^https:\/\/saeromgls-dashboard.*\.vercel\.app$/, // Preview 배포
+    /^http:\/\/localhost:\d+$/, // 로컬 개발 (3000, 3001 등)
+    /^http:\/\/127\.0\.0\.1:\d+$/,
+  ];
   app.enableCors({
-    origin: true,
+    origin: (origin, cb) => {
+      // origin 없음 = 모바일 앱 / 서버간 호출 / Postman 허용
+      if (!origin) return cb(null, true);
+      const isAllowed = allowedOrigins.some((o) =>
+        typeof o === 'string' ? o === origin : o.test(origin),
+      );
+      if (isAllowed) return cb(null, true);
+      return cb(new Error(`Origin ${origin} is not allowed by CORS`), false);
+    },
     credentials: true,
   });
 

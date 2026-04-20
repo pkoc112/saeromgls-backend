@@ -13,6 +13,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { JwtPayload } from '../common/decorators/current-user.decorator';
 import { RegisterDto } from './dto/register.dto';
 import { encryptWorkerPII, decryptWorkerPII } from '../common/utils/pii.util';
+import { maskEmail } from '../common/utils/pii-mask';
 
 @Injectable()
 export class AuthService {
@@ -191,7 +192,7 @@ export class AuthService {
       ],
     });
 
-    this.logger.log(`New user registered: ${dto.email}`);
+    this.logger.log(`New user registered: ${maskEmail(dto.email)}`);
 
     const token = await this.generateToken(
       worker.id,
@@ -275,7 +276,7 @@ export class AuthService {
 
     // 성공 기록
     await this.recordLoginHistory(worker.id, true, ipAddress, userAgent);
-    this.logger.log(`Email login: ${email} (${worker.role})`);
+    this.logger.log(`Email login: ${maskEmail(email)} (${worker.role})`);
     return worker;
   }
 
@@ -403,7 +404,7 @@ export class AuthService {
       }),
     ]);
 
-    this.logger.log(`Password reset for: ${email}`);
+    this.logger.log(`Password reset for: ${maskEmail(email)}`);
     return { message: '비밀번호가 성공적으로 재설정되었습니다' };
   }
 
@@ -458,13 +459,13 @@ export class AuthService {
           this.logger.error(`Resend 발송 실패: ${JSON.stringify(error)}`);
           // 발송 실패해도 코드는 이미 DB에 저장됨 — 재시도 가능
         } else {
-          this.logger.log(`인증 코드 이메일 발송 완료: ${email}`);
+          this.logger.log(`인증 코드 이메일 발송 완료: ${maskEmail(email)}`);
         }
       } catch (err) {
         this.logger.error(`Resend 예외: ${err}`);
       }
     } else {
-      this.logger.log(`[DEV] 인증 코드 ${code} → ${email} (Resend 미설정, 이메일 미발송)`);
+      this.logger.log(`[DEV] 인증 코드 ${code} → ${maskEmail(email)} (Resend 미설정, 이메일 미발송)`);
     }
 
     return {

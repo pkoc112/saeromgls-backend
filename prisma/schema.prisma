@@ -7,9 +7,13 @@ generator client {
   binaryTargets = ["native", "rhel-openssl-3.0.x", "debian-openssl-3.0.x"]
 }
 
+// P0-7: Neon serverless 연결 풀 설정
+// DATABASE_URL에 ?connection_limit=5&pool_timeout=15 쿼리 파라미터 추가 권장
+// DIRECT_URL은 마이그레이션용 (pooler 우회)
 datasource db {
-  provider = "postgresql"
-  url      = env("DATABASE_URL")
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
 }
 
 // ---------- Models ----------
@@ -611,6 +615,9 @@ model ScoreRun {
   @@index([month])
   @@index([status])
   @@index([siteId, month])
+  // P0-9: 동일 사이트+정책+월에 여러 ScoreRun 동시 생성 차단 (레이스 조건 방어)
+  // 운영 DB에 적용 시 기존 중복 데이터 정리 필요
+  @@unique([siteId, policyVersionId, month])
   @@map("score_runs")
 }
 

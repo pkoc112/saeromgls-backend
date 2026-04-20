@@ -210,48 +210,42 @@ export class DashboardService {
   async getTrends(from: string, to: string, groupBy: 'hour' | 'day' | 'week' | 'month' = 'day', siteId?: string) {
     const { fromDate, toDate } = kstDateRange(from, to);
 
-    // PostgreSQL date_trunc / to_char — KST 타임존 기준
-    let dateExpr: string;
-    switch (groupBy) {
-      case 'hour':
-        dateExpr = `to_char(started_at AT TIME ZONE 'Asia/Seoul', 'HH24')`;
-        break;
-      case 'week':
-        dateExpr = `to_char(date_trunc('week', started_at AT TIME ZONE 'Asia/Seoul'), 'YYYY-"W"IW')`;
-        break;
-      case 'month':
-        dateExpr = `to_char(date_trunc('month', started_at AT TIME ZONE 'Asia/Seoul'), 'YYYY-MM-DD')`;
-        break;
-      default:
-        dateExpr = `to_char(started_at AT TIME ZONE 'Asia/Seoul', 'YYYY-MM-DD')`;
-    }
+    // P0-3: $queryRawUnsafe 제거 — Prisma.sql 태그드 템플릿으로 전환
+    // dateExpr은 whitelist 분기지만 template literal로 문자열 치환하던 패턴을 parameterized로
+    const dateExpr = (() => {
+      switch (groupBy) {
+        case 'hour':
+          return Prisma.sql`to_char(started_at AT TIME ZONE 'Asia/Seoul', 'HH24')`;
+        case 'week':
+          return Prisma.sql`to_char(date_trunc('week', started_at AT TIME ZONE 'Asia/Seoul'), 'YYYY-"W"IW')`;
+        case 'month':
+          return Prisma.sql`to_char(date_trunc('month', started_at AT TIME ZONE 'Asia/Seoul'), 'YYYY-MM-DD')`;
+        default:
+          return Prisma.sql`to_char(started_at AT TIME ZONE 'Asia/Seoul', 'YYYY-MM-DD')`;
+      }
+    })();
 
-    // siteFilter: 사용자 입력이 아닌 코드 분기이므로 SQL 인젝션 위험 없음
-    // dateExpr도 코드 내부 분기 (groupBy는 switch로 검증됨)
     const siteFilter = siteId
-      ? `AND started_by_worker_id IN (SELECT id FROM workers WHERE site_id = $3)`
-      : '';
-    const queryParams: (string | Date)[] = [fromDate.toISOString(), toDate.toISOString()];
-    if (siteId) queryParams.push(siteId);
+      ? Prisma.sql`AND started_by_worker_id IN (SELECT id FROM workers WHERE site_id = ${siteId} OR site_id IS NULL)`
+      : Prisma.empty;
 
     try {
-      const trends = await this.prisma.$queryRawUnsafe<
+      const trends = await this.prisma.$queryRaw<
         { period: string; count: bigint; total_volume: number; total_quantity: bigint }[]
-      >(
-        `SELECT
+      >(Prisma.sql`
+        SELECT
           ${dateExpr} as period,
           COUNT(*) as count,
           COALESCE(SUM(volume), 0) as total_volume,
           COALESCE(SUM(quantity), 0) as total_quantity
         FROM work_items
-        WHERE started_at >= $1::timestamp
-          AND started_at <= $2::timestamp
+        WHERE started_at >= ${fromDate}
+          AND started_at <= ${toDate}
           AND status != 'VOID'
           ${siteFilter}
         GROUP BY ${dateExpr}
-        ORDER BY period ASC`,
-        ...queryParams,
-      );
+        ORDER BY period ASC
+      `);
 
       return trends.map((t) => ({
         date: t.period,

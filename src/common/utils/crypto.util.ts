@@ -16,6 +16,22 @@ const ALGORITHM = 'aes-256-gcm';
  * JWT_SECRET과 분리하면 키 로테이션 시 JWT에 영향 없이 PII 재암호화 가능.
  */
 function getKey(): Buffer {
+  // P0-2: production에서는 PII_ENCRYPTION_KEY를 반드시 독립 설정
+  // JWT_SECRET 로테이션 시 암호화 데이터 복호화 불가 방지
+  if (process.env.NODE_ENV === 'production') {
+    if (!process.env.PII_ENCRYPTION_KEY) {
+      throw new Error(
+        'PII_ENCRYPTION_KEY environment variable is required in production. ' +
+          'Use a dedicated 32+ character random string (do NOT reuse JWT_SECRET).',
+      );
+    }
+    return crypto
+      .createHash('sha256')
+      .update(process.env.PII_ENCRYPTION_KEY)
+      .digest();
+  }
+
+  // 개발 환경: PII_ENCRYPTION_KEY 권장, JWT_SECRET fallback, 마지막은 dev key
   const raw =
     process.env.PII_ENCRYPTION_KEY ||
     process.env.JWT_SECRET ||

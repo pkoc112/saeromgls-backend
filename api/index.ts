@@ -54,6 +54,26 @@ async function getApp() {
     } catch {
       app.useGlobalFilters(new HttpExceptionFilter());
     }
+
+    // P0-8: 전역 AuditInterceptor 등록 (운영 요청 로깅)
+    try {
+      const { AuditInterceptor } = require('../src/common/interceptors/audit.interceptor');
+      app.useGlobalInterceptors(new AuditInterceptor());
+    } catch (e) {
+      // 인터셉터 로드 실패해도 앱 기동은 계속
+      console.warn('AuditInterceptor load failed:', e);
+    }
+
+    // P0-10: Correlation ID 미들웨어 (요청 단위 추적)
+    const express = app.getHttpAdapter().getInstance();
+    express.use((req: any, res: any, next: any) => {
+      const incoming = req.headers['x-request-id'] as string | undefined;
+      const reqId = incoming || `${Date.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
+      req.requestId = reqId;
+      res.setHeader('X-Request-ID', reqId);
+      next();
+    });
+
     await app.init();
     cachedApp = app.getHttpAdapter().getInstance();
   }
