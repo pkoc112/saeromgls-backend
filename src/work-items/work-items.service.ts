@@ -224,6 +224,10 @@ export class WorkItemsService {
       throw new BadRequestException('이미 종료되었거나 무효화된 작업입니다');
     }
 
+    // P1-24: 작업 시간 역전 방지 — endedAt이 startedAt보다 이르지 않도록
+    const now = new Date();
+    const effectiveEndedAt = now.getTime() < workItem.startedAt.getTime() ? workItem.startedAt : now;
+
     const beforeState = JSON.stringify(workItem);
 
     const updated = await this.prisma.$transaction(async (tx) => {
@@ -232,7 +236,7 @@ export class WorkItemsService {
         where: { id },
         data: {
           endedByWorkerId: dto.endedByWorkerId,
-          endedAt: new Date(),
+          endedAt: effectiveEndedAt,
           status: 'ENDED',
           volume: dto.volume !== undefined ? dto.volume : workItem.volume,
           quantity: dto.quantity !== undefined ? dto.quantity : workItem.quantity,

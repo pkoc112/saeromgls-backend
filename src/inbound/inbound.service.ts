@@ -195,43 +195,45 @@ export class InboundService {
     const dayEnd = new Date(parsedDate);
     dayEnd.setHours(23, 59, 59, 999);
 
-    // 중복 체크: 같은 날짜 + 공급처 + 수량 → 덮어쓰기
-    const existing = await this.prisma.inboundSession.findFirst({
-      where: {
-        siteId,
-        supplierName: supplierName || null,
-        totalQuantity: Number(totalQuantity) || 0,
-        sessionDate: { gte: dayStart, lte: dayEnd },
-      },
-    });
+    // P1-19: 중복 삭제 + 새 세션 생성을 트랜잭션으로 묶기 (삭제 후 생성 실패 시 데이터 소실 방지)
+    const session = await this.prisma.$transaction(async (tx) => {
+      const existing = await tx.inboundSession.findFirst({
+        where: {
+          siteId,
+          supplierName: supplierName || null,
+          totalQuantity: Number(totalQuantity) || 0,
+          sessionDate: { gte: dayStart, lte: dayEnd },
+        },
+      });
 
-    if (existing) {
-      // 기존 세션 삭제 (참여자도 cascade 삭제)
-      await this.prisma.inboundSession.delete({ where: { id: existing.id } });
-      this.logger.log(`Duplicate inbound session deleted: ${existing.id} (${supplierName}, ${totalQuantity})`);
-    }
+      if (existing) {
+        await tx.inboundSession.delete({ where: { id: existing.id } });
+        this.logger.log(`Duplicate inbound session deleted: ${existing.id} (${supplierName}, ${totalQuantity})`);
+      }
 
-    const session = await this.prisma.inboundSession.create({
-      data: {
-        siteId,
-        sessionDate: parsedDate,
-        shift: shift || 'FULL',
-        supplierName: supplierName || null,
-        totalQuantity: Number(totalQuantity) || 0,
-        totalVolume: Number(totalVolume) || 0,
-        itemCount: Number(itemCount) || 0,
-        expectedQuantity: Number(expectedQuantity) || 0,
-        diffQuantity: Number(diffQuantity) || 0,
-        rawData: JSON.stringify(items || fileData),
-        status: 'PENDING',
-        notes: existing ? '엑셀 업로드 (덮어쓰기)' : '엑셀 업로드로 생성',
-      },
+      const created = await tx.inboundSession.create({
+        data: {
+          siteId,
+          sessionDate: parsedDate,
+          shift: shift || 'FULL',
+          supplierName: supplierName || null,
+          totalQuantity: Number(totalQuantity) || 0,
+          totalVolume: Number(totalVolume) || 0,
+          itemCount: Number(itemCount) || 0,
+          expectedQuantity: Number(expectedQuantity) || 0,
+          diffQuantity: Number(diffQuantity) || 0,
+          rawData: JSON.stringify(items || fileData),
+          status: 'PENDING',
+          notes: existing ? '엑셀 업로드 (덮어쓰기)' : '엑셀 업로드로 생성',
+        },
+      });
+      return { created, wasOverwrite: !!existing };
     });
 
     this.logger.log(
-      `InboundSession ${existing ? 'overwritten' : 'created'} from Excel: ${session.id} (${supplierName})`,
+      `InboundSession ${session.wasOverwrite ? 'overwritten' : 'created'} from Excel: ${session.created.id} (${supplierName})`,
     );
-    return this.findOneRaw(session.id);
+    return this.findOneRaw(session.created.id);
   }
 
   /**

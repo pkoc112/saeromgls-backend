@@ -167,29 +167,29 @@ export class AuthService {
     const randomPin = Math.floor(100000 + Math.random() * 900000).toString();
     const hashedPin = await bcrypt.hash(randomPin, 10);
 
-    // 작업자 생성
-    // Phase 1: phone 암호화 (email 암호화는 검색 인덱스 마이그레이션 후 Phase 2에서 진행)
+    // P1-18: 작업자 + UserConsent 트랜잭션으로 묶기 (consent 없는 계정 방지)
     const encryptedData = encryptWorkerPII({ phone: dto.phone });
-    const worker = await this.prisma.worker.create({
-      data: {
-        name: dto.name,
-        email: dto.email,
-        phone: encryptedData.phone as string,
-        passwordHash,
-        employeeCode,
-        pin: hashedPin,
-        role: 'WORKER',
-        status: 'ACTIVE',
-        siteId,
-      },
-    });
-
-    // UserConsent 기록
-    await this.prisma.userConsent.createMany({
-      data: [
-        { workerId: worker.id, consentType: 'TOS', version: '1.0' },
-        { workerId: worker.id, consentType: 'PRIVACY', version: '1.0' },
-      ],
+    const worker = await this.prisma.$transaction(async (tx) => {
+      const w = await tx.worker.create({
+        data: {
+          name: dto.name || dto.email.split('@')[0],
+          email: dto.email,
+          phone: encryptedData.phone as string,
+          passwordHash,
+          employeeCode,
+          pin: hashedPin,
+          role: 'WORKER',
+          status: 'ACTIVE',
+          siteId,
+        },
+      });
+      await tx.userConsent.createMany({
+        data: [
+          { workerId: w.id, consentType: 'TOS', version: '1.0' },
+          { workerId: w.id, consentType: 'PRIVACY', version: '1.0' },
+        ],
+      });
+      return w;
     });
 
     this.logger.log(`New user registered: ${maskEmail(dto.email)}`);

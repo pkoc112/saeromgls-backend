@@ -17,6 +17,7 @@ import {
   ApiResponse,
   ApiTags,
 } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { Request } from 'express';
 import { CurrentUser } from '../common/decorators/current-user.decorator';
 import { AuthService } from './auth.service';
@@ -41,6 +42,8 @@ export class AuthController {
   @ApiBody({ type: LoginDto })
   @ApiResponse({ status: 200, description: 'JWT 토큰 반환' })
   @ApiResponse({ status: 401, description: '인증 실패' })
+  // P1-17: 인증 엔드포인트 Rate limit 강화 (브루트포스 방어, IP당 1분 5회)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   async adminLogin(@Body() dto: LoginDto, @Req() req: Request) {
     const ip = req.ip || req.headers['x-forwarded-for']?.toString();
     const ua = req.headers['user-agent'];
@@ -54,6 +57,8 @@ export class AuthController {
   @ApiBody({ type: PinLoginDto })
   @ApiResponse({ status: 200, description: 'JWT 토큰 + 작업자 정보 반환' })
   @ApiResponse({ status: 401, description: '인증 실패' })
+  // P1-17: 인증 엔드포인트 Rate limit 강화 (브루트포스 방어)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   async pinLogin(@Body() dto: PinLoginDto, @Req() req: Request) {
     const ip = req.ip || req.headers['x-forwarded-for']?.toString();
     const ua = req.headers['user-agent'];
@@ -91,6 +96,8 @@ export class AuthController {
   @ApiTags('Auth')
   @ApiOperation({ summary: '이메일 로그인' })
   @ApiResponse({ status: 200, description: 'JWT 토큰 + 사용자 정보 반환' })
+  // P1-17: 인증 엔드포인트 Rate limit 강화 (브루트포스 방어)
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   async emailLogin(@Body() dto: EmailLoginDto, @Req() req: Request) {
     const ip = req.ip || req.headers['x-forwarded-for']?.toString();
     const ua = req.headers['user-agent'];
