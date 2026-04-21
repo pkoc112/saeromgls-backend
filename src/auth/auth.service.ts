@@ -736,6 +736,8 @@ export class AuthService {
         name: worker.name,
         role: worker.role.toLowerCase(),
         email: worker.employeeCode,
+        // ★ 사업장 격리: 웹 admin 로그인에서 siteId 제공 (useSiteFilter 등이 사용)
+        siteId: worker.siteId ?? null,
       },
     };
   }
@@ -802,6 +804,8 @@ export class AuthService {
         name: worker.name,
         employeeCode: worker.employeeCode,
         role: worker.role,
+        // ★ 사업장 격리: 모바일에서 siteId로 자기 사업장 작업만 조회
+        siteId: worker.siteId ?? null,
       },
     };
   }
