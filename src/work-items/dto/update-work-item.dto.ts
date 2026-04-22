@@ -8,6 +8,7 @@ import {
   IsInt,
   IsDateString,
   Min,
+  Max,
 } from 'class-validator';
 
 /**
@@ -30,6 +31,7 @@ export class UpdateWorkItemDto {
   })
   @IsNumber()
   @Min(0)
+  @Max(99999, { message: '물량이 허용 범위를 초과했습니다 (최대 99,999 CBM)' })
   @IsOptional()
   volume?: number;
 
@@ -101,6 +103,7 @@ export class ForceEndWorkItemDto {
   })
   @IsNumber()
   @Min(0)
+  @Max(99999, { message: '물량이 허용 범위를 초과했습니다 (최대 99,999 CBM)' })
   @IsOptional()
   volume?: number;
 

@@ -8,6 +8,7 @@ import {
   IsInt,
   IsArray,
   Min,
+  Max,
 } from 'class-validator';
 
 export class CreateWorkItemDto {
@@ -35,6 +36,9 @@ export class CreateWorkItemDto {
   })
   @IsNumber({}, { message: '물량은 숫자여야 합니다' })
   @Min(0)
+  // 현장 1건당 CBM 상한. 소수점 누락 오입력(예: 7.30 → 730,000) 방어용 defense-in-depth.
+  // 모바일 UX는 200 초과 시 Confirm 모달로 재확인하고, 서버는 그보다 훨씬 관대한 상한만 둠.
+  @Max(99999, { message: '물량이 허용 범위를 초과했습니다 (최대 99,999 CBM)' })
   @IsOptional()
   volume?: number;
 

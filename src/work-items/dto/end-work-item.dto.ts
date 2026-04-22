@@ -8,6 +8,7 @@ import {
   IsInt,
   IsArray,
   Min,
+  Max,
 } from 'class-validator';
 
 /**
@@ -30,6 +31,8 @@ export class EndWorkItemDto {
   })
   @IsNumber()
   @Min(0)
+  // 현장 1건당 CBM 상한. 모바일 클라이언트는 200 초과 시 Confirm 모달로 재확인.
+  @Max(99999, { message: '물량이 허용 범위를 초과했습니다 (최대 99,999 CBM)' })
   @IsOptional()
   volume?: number;
 
