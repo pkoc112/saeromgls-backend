@@ -2,6 +2,7 @@ import {
   Injectable,
   ConflictException,
   NotFoundException,
+  ForbiddenException,
   Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
@@ -80,12 +81,31 @@ export class ClassificationsService {
   }
 
   /**
-   * 분류 수정 (관리자 전용)
+   * 분류 수정 (관리자 전용) — 소유권 검증 포함
+   *
+   * - MASTER: 모든 분류 수정 가능 (전역 포함)
+   * - ADMIN: 자기 사업장(siteId 일치)의 분류만 수정 가능
+   *   · 전역 분류(siteId=null)는 MASTER만 관리해야 함 → ADMIN은 거부
+   *   · 다른 사업장 분류도 거부
    */
-  async update(id: string, dto: UpdateClassificationDto) {
+  async update(
+    id: string,
+    dto: UpdateClassificationDto,
+    requester?: { role: string; siteId?: string },
+  ) {
     const existing = await this.prisma.classification.findUnique({ where: { id } });
     if (!existing) {
       throw new NotFoundException('분류를 찾을 수 없습니다');
+    }
+
+    // ★ 소유권 검증 — MASTER 외에는 자기 사업장 분류만 수정 가능
+    if (requester && requester.role !== 'MASTER') {
+      if (existing.siteId === null) {
+        throw new ForbiddenException('전역 분류는 MASTER만 수정할 수 있습니다');
+      }
+      if (existing.siteId !== requester.siteId) {
+        throw new ForbiddenException('다른 사업장의 분류는 수정할 수 없습니다');
+      }
     }
 
     // 코드 변경 시 중복 확인

@@ -390,13 +390,13 @@ export class SubscriptionsService {
       throw new NotFoundException('해당 사업장의 구독을 찾을 수 없습니다');
     }
 
-    if (subscription.status === 'CANCELED') {
+    if (subscription.status === 'CANCELLED') {
       throw new BadRequestException('이미 해지된 구독입니다');
     }
 
     await this.prisma.subscription.update({
       where: { id: subscription.id },
-      data: { status: 'CANCELED' },
+      data: { status: 'CANCELLED' },
     });
 
     return { message: `${subscription.plan.name} 구독이 해지되었습니다` };
@@ -431,7 +431,7 @@ export class SubscriptionsService {
 
     // 기존 만료/해지 구독 삭제 후 새로 생성
     await this.prisma.subscription.deleteMany({
-      where: { siteId, status: { in: ['EXPIRED', 'CANCELED', 'SUSPENDED'] } },
+      where: { siteId, status: { in: ['EXPIRED', 'CANCELLED', 'SUSPENDED'] } },
     });
 
     await this.prisma.subscription.create({

@@ -8,6 +8,7 @@ import {
   Query,
   UseGuards,
   ParseUUIDPipe,
+  ForbiddenException,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -60,10 +61,19 @@ export class ClassificationsController {
     @CurrentUser() user: JwtPayload,
     @Body() dto: CreateClassificationDto,
   ) {
-    // ADMIN/SUPERVISOR: 자기 사업장 자동 배정, MASTER: dto.siteId 사용 가능
-    const siteId = user.role === 'MASTER'
-      ? (dto.siteId || undefined)
-      : user.siteId;
+    // ADMIN: 자기 사업장 자동 배정, MASTER: dto.siteId 사용 가능
+    let siteId: string | undefined;
+    if (user.role === 'MASTER') {
+      siteId = dto.siteId || undefined; // MASTER는 명시적 siteId 또는 전역(null) 생성 가능
+    } else {
+      // ADMIN은 반드시 자기 사업장 siteId가 있어야 함 (전역 분류 생성 차단)
+      if (!user.siteId) {
+        throw new ForbiddenException(
+          '사업장이 배정되지 않은 관리자는 분류를 생성할 수 없습니다',
+        );
+      }
+      siteId = user.siteId;
+    }
     return this.classificationsService.create(dto, siteId);
   }
 
@@ -72,28 +82,41 @@ export class ClassificationsController {
   @Roles('ADMIN')
   @ApiBearerAuth('jwt')
   @ApiTags('Admin Classifications')
-  @ApiOperation({ summary: '분류 수정 (관리자 전용)' })
+  @ApiOperation({ summary: '분류 수정 (관리자 전용, 소유권 검증)' })
   @ApiParam({ name: 'id', description: '분류 UUID' })
   @ApiResponse({ status: 200, description: '분류 수정 완료' })
+  @ApiResponse({ status: 403, description: '권한 없음 (다른 사업장 또는 전역 분류)' })
   @ApiResponse({ status: 404, description: '분류 없음' })
   update(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateClassificationDto,
+    @CurrentUser() user: JwtPayload,
   ) {
-    return this.classificationsService.update(id, dto);
+    return this.classificationsService.update(id, dto, {
+      role: user.role,
+      siteId: user.siteId,
+    });
   }
 
   // ===================== Mobile Endpoints =====================
 
   @Get('mobile/classifications')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('jwt')
   @ApiTags('Mobile Classifications')
   @ApiOperation({
-    summary: '활성 분류 목록 (모바일, siteId 격리)',
-    description: '인증 불필요. siteId로 해당 사업장 분류만 반환.',
+    summary: '활성 분류 목록 (모바일, JWT siteId 강제)',
+    description:
+      'JWT 토큰의 siteId로 해당 사업장 분류만 반환. MASTER만 Query siteId로 임의 조회 가능.',
   })
-  @ApiQuery({ name: 'siteId', required: false })
+  @ApiQuery({ name: 'siteId', required: false, description: 'MASTER 전용' })
   @ApiResponse({ status: 200, description: '활성 분류 목록 (정렬 순서)' })
-  findActiveForMobile(@Query('siteId') siteId?: string) {
+  findActiveForMobile(
+    @CurrentUser() user: JwtPayload,
+    @Query('siteId') querySiteId?: string,
+  ) {
+    // ★ siteId 격리: MASTER는 Query로 임의 조회, 나머지는 JWT siteId 강제
+    const siteId = user.role === 'MASTER' ? querySiteId : user.siteId;
     return this.classificationsService.findActiveForMobile(siteId);
   }
 }
