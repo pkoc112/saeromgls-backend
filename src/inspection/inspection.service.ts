@@ -72,6 +72,10 @@ export class InspectionService {
 
   /**
    * 일괄 검수: 당일 미검수 항목 전량 PASS + 이슈 개별 마킹
+   * - siteId 필수 (controller에서 가드됨)
+   * - 검수자 존재 + ACTIVE 사전 검증
+   * - 사이트 존재 사전 검증
+   * - Prisma FK 위반은 BadRequest로 변환하여 한국어 메시지 노출
    */
   async batchInspect(
     siteId: string,
@@ -81,9 +85,53 @@ export class InspectionService {
       issues?: { workItemId: string; issueType: string; notes?: string }[];
     },
   ) {
+    // ★ 사전 검증 1: 사업장 존재 확인 (FK 위반 방지)
+    const site = await this.prisma.site.findUnique({ where: { id: siteId } });
+    if (!site) {
+      throw new BadRequestException('지정된 사업장을 찾을 수 없습니다');
+    }
+
+    // ★ 사전 검증 2: 검수자 존재 + ACTIVE
+    const inspector = await this.prisma.worker.findUnique({
+      where: { id: dto.inspectedByWorkerId },
+      select: { id: true, name: true, status: true, role: true, siteId: true },
+    });
+    if (!inspector) {
+      throw new BadRequestException('지정한 검수자를 찾을 수 없습니다');
+    }
+    if (inspector.status !== 'ACTIVE') {
+      throw new BadRequestException(
+        `검수자(${inspector.name})는 비활성 상태입니다. 활성 작업자를 선택해주세요`,
+      );
+    }
+    // 검수자 사업장과 일괄검수 대상 사업장 매칭 (legacy NULL 허용)
+    if (inspector.siteId && inspector.siteId !== siteId) {
+      throw new BadRequestException(
+        `검수자(${inspector.name})는 다른 사업장 소속입니다. 같은 사업장 작업자만 검수할 수 있습니다`,
+      );
+    }
+
+    // ★ 사전 검증 3: 미검수 항목 존재 확인
     const pending = await this.getPendingItems(siteId, dto.date);
     if (pending.pendingCount === 0) {
-      return { message: '검수 대기 항목이 없습니다', created: 0 };
+      // 200으로 정상 응답하되 created=0 명시 (UI에서 명확히 표시)
+      return {
+        message: `${dto.date}에 검수 대기 항목이 없습니다`,
+        created: 0,
+        passCount: 0,
+        issueCount: 0,
+      };
+    }
+
+    // ★ 사전 검증 4: 이슈 목록의 workItemId가 모두 미검수 대기 목록에 있는지 확인
+    if (dto.issues && dto.issues.length > 0) {
+      const pendingIds = new Set(pending.pending.map((p) => p.id));
+      const invalidIssues = dto.issues.filter((i) => !pendingIds.has(i.workItemId));
+      if (invalidIssues.length > 0) {
+        throw new BadRequestException(
+          `이슈 마킹된 ${invalidIssues.length}건이 검수 대기 목록에 없습니다 (이미 검수됐거나 다른 사업장 작업)`,
+        );
+      }
     }
 
     const issueMap = new Map(
@@ -104,19 +152,35 @@ export class InspectionService {
       };
     });
 
-    const created = await this.prisma.inspectionRecord.createMany({
-      data: records,
-    });
+    try {
+      const created = await this.prisma.inspectionRecord.createMany({
+        data: records,
+      });
 
-    this.logger.log(
-      `Batch inspection: ${created.count} items (${dto.issues?.length || 0} issues) by ${dto.inspectedByWorkerId}`,
-    );
+      this.logger.log(
+        `Batch inspection: ${created.count} items (${dto.issues?.length || 0} issues) by ${dto.inspectedByWorkerId} for site ${siteId}`,
+      );
 
-    return {
-      created: created.count,
-      passCount: records.filter((r) => r.result === 'PASS').length,
-      issueCount: records.filter((r) => r.result === 'ISSUE').length,
-    };
+      return {
+        created: created.count,
+        passCount: records.filter((r) => r.result === 'PASS').length,
+        issueCount: records.filter((r) => r.result === 'ISSUE').length,
+      };
+    } catch (err: any) {
+      // Prisma FK/unique 에러를 한국어 BadRequest로 변환 (사전 검증으로 거의 발생 안 하지만 안전망)
+      if (err?.code === 'P2003') {
+        throw new BadRequestException(
+          '검수 데이터 저장 실패: 외래키 제약 위반 (사업장/검수자/작업 데이터를 확인해주세요)',
+        );
+      }
+      if (err?.code === 'P2002') {
+        throw new BadRequestException(
+          '동일한 작업에 대한 검수 기록이 이미 존재합니다',
+        );
+      }
+      this.logger.error('Batch inspection failed', err);
+      throw err;
+    }
   }
 
   /**

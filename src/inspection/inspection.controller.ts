@@ -17,6 +17,7 @@ import {
 import { InspectionService } from './inspection.service';
 import { CreateInspectionDto } from './dto/create-inspection.dto';
 import { QueryInspectionDto } from './dto/query-inspection.dto';
+import { BatchInspectDto } from './dto/batch-inspect.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
@@ -61,12 +62,37 @@ export class InspectionController {
 
   @Post('batch')
   @Roles('ADMIN', 'SUPERVISOR')
-  @ApiOperation({ summary: '일괄 검수 (전량 PASS + 이슈 개별 마킹)' })
+  @ApiOperation({
+    summary: '일괄 검수 (전량 PASS + 이슈 개별 마킹)',
+    description:
+      'ADMIN/SUPERVISOR는 JWT siteId로 자동 격리, MASTER는 dto.siteId 또는 ?siteId 쿼리 필수.',
+  })
+  @ApiResponse({ status: 201, description: '일괄 검수 처리 완료' })
+  @ApiResponse({ status: 400, description: 'siteId 미배정 또는 검증 실패' })
+  @ApiQuery({ name: 'siteId', required: false, description: 'MASTER 전용 사업장 지정' })
   batchInspect(
-    @Body() dto: { inspectedByWorkerId: string; date: string; issues?: { workItemId: string; issueType: string; notes?: string }[] },
+    @Body() dto: BatchInspectDto,
     @CurrentUser() user: JwtPayload,
+    @Query('siteId') querySiteId?: string,
   ) {
-    const siteId = resolveSiteId(user, undefined) || user.siteId || '';
+    // ★ siteId 가드: ADMIN/SUPERVISOR는 JWT siteId, MASTER는 명시적 지정 필수
+    let siteId: string | undefined;
+    if (user.role === 'MASTER') {
+      siteId = dto.siteId || querySiteId;
+      if (!siteId) {
+        throw new BadRequestException(
+          '전량 검수를 진행하려면 사업장을 먼저 선택해주세요 (MASTER 계정)',
+        );
+      }
+    } else {
+      // ADMIN/SUPERVISOR
+      if (!user.siteId) {
+        throw new BadRequestException(
+          '사업장이 배정되지 않은 계정은 전량 검수를 진행할 수 없습니다',
+        );
+      }
+      siteId = user.siteId;
+    }
     return this.inspectionService.batchInspect(siteId, dto);
   }
 
