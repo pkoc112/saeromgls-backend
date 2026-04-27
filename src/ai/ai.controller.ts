@@ -58,8 +58,13 @@ export class AiController {
   @ApiBody({ type: AiAnalysisRequestDto })
   @ApiResponse({ status: 201, description: '주간 요약 인사이트 생성 완료' })
   @ApiResponse({ status: 503, description: 'AI 서비스 사용 불가' })
-  generateWeeklySummary(@Body() dto: AiAnalysisRequestDto) {
-    return this.aiService.generateWeeklySummary(dto.fromDate, dto.toDate);
+  generateWeeklySummary(
+    @Body() dto: AiAnalysisRequestDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    // ★ siteId 격리: MASTER만 전체, 그 외엔 자기 사업장
+    const siteId = resolveSiteId(user, undefined);
+    return this.aiService.generateWeeklySummary(dto.fromDate, dto.toDate, siteId);
   }
 
   @Post('anomaly-detection')
@@ -72,8 +77,13 @@ export class AiController {
   @ApiBody({ type: AiAnalysisRequestDto })
   @ApiResponse({ status: 201, description: '이상 탐지 인사이트 생성 완료' })
   @ApiResponse({ status: 503, description: 'AI 서비스 사용 불가' })
-  detectAnomalies(@Body() dto: AiAnalysisRequestDto) {
-    return this.aiService.detectAnomalies(dto.fromDate, dto.toDate);
+  detectAnomalies(
+    @Body() dto: AiAnalysisRequestDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    // ★ siteId 격리: MASTER만 전체, 그 외엔 자기 사업장
+    const siteId = resolveSiteId(user, undefined);
+    return this.aiService.detectAnomalies(dto.fromDate, dto.toDate, siteId);
   }
 
   @Post('difficulty-analysis')

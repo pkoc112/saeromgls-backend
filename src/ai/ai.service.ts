@@ -23,8 +23,9 @@ export class AiService {
    * 주간 요약 생성
    * 지정 기간의 작업 데이터를 분석하여 요약 리포트 생성
    * PII 최소화: 작업자 이름 대신 사번 사용
+   * ★ siteId 격리 필수 (이 데이터가 Claude로 송출되므로)
    */
-  async generateWeeklySummary(fromDate: string, toDate: string) {
+  async generateWeeklySummary(fromDate: string, toDate: string, siteId?: string) {
     this.ensureClientReady();
 
     const from = new Date(fromDate);
@@ -36,6 +37,10 @@ export class AiService {
       where: {
         startedAt: { gte: from, lte: to },
         status: { not: 'VOID' },
+        // ★ siteId 격리: 해당 사업장 작업자 + siteId NULL legacy 만 분석
+        ...(siteId && {
+          startedByWorker: { OR: [{ siteId }, { siteId: null }] },
+        }),
       },
       select: {
         status: true,
@@ -76,13 +81,14 @@ ${JSON.stringify(summary, null, 2)}
 
     const content = await this.callClaude(prompt);
 
-    // 결과 저장
+    // 결과 저장 (siteId 포함하여 사업장별 분리 저장)
     const insight = await this.prisma.dashboardInsight.create({
       data: {
         type: 'WEEKLY_SUMMARY',
         period: `${fromDate} ~ ${toDate}`,
         content,
         generatedAt: new Date(),
+        ...(siteId && { siteId }),
       },
     });
 
@@ -92,8 +98,9 @@ ${JSON.stringify(summary, null, 2)}
   /**
    * 이상 탐지
    * 지정 기간의 작업 데이터에서 비정상 패턴 감지
+   * ★ siteId 격리 필수
    */
-  async detectAnomalies(fromDate: string, toDate: string) {
+  async detectAnomalies(fromDate: string, toDate: string, siteId?: string) {
     this.ensureClientReady();
 
     const from = new Date(fromDate);
@@ -103,6 +110,10 @@ ${JSON.stringify(summary, null, 2)}
     const workItems = await this.prisma.workItem.findMany({
       where: {
         startedAt: { gte: from, lte: to },
+        // ★ siteId 격리
+        ...(siteId && {
+          startedByWorker: { OR: [{ siteId }, { siteId: null }] },
+        }),
       },
       select: {
         id: true,
@@ -500,7 +511,7 @@ CBM당 소요시간 기준으로 가장 효율적인/비효율적인 납품처 T
       await this.prisma.predictionLog.create({
         data: {
           siteId: siteId || '',
-          modelVersion: 'claude-opus-4-6',
+          modelVersion: 'claude-opus-4-5',
           predictionType: 'DIFFICULTY',
           inputSnapshot: JSON.stringify(destStats),
           output: content,
@@ -534,7 +545,8 @@ CBM당 소요시간 기준으로 가장 효율적인/비효율적인 납품처 T
       try {
         // P0-6: Vercel serverless 60초 제한 대응 — Claude 호출을 55초 내 강제 완료
         const response = await this.client.messages.create({
-          model: 'claude-opus-4-6',
+          // 모델 ID는 환경변수로 오버라이드 가능 (모델 업데이트 시 코드 수정 없이 대응)
+          model: process.env.ANTHROPIC_MODEL || 'claude-opus-4-5',
           max_tokens: 16384, // 긴 분석 보고서(난이도/인력배치 테이블 포함) 대응
           messages: [
             {

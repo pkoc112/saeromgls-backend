@@ -79,10 +79,13 @@ export class WorkItemsController {
   })
   @ApiResponse({ status: 200, description: '작업 목록' })
   findActiveWorkItems(
+    @CurrentUser() user: JwtPayload,
     @Query('workerId') workerId?: string,
     @Query('status') status?: string,
-    @Query('siteId') siteId?: string,
+    @Query('siteId') querySiteId?: string,
   ) {
+    // ★ siteId 격리: MASTER만 임의 siteId 조회, 그 외엔 JWT siteId 강제
+    const siteId = user.role === 'MASTER' ? querySiteId : user.siteId;
     return this.workItemsService.findActiveForMobile(workerId, status, siteId);
   }
 
@@ -157,6 +160,45 @@ export class WorkItemsController {
     return this.workItemsService.resumeWorkItem(id, resumedByWorkerId, ip, userAgent, user);
   }
 
+  @Post('mobile/work-items/:id/restore')
+  @UseGuards(JwtAuthGuard)
+  @ApiTags('Mobile Work Items')
+  @ApiOperation({
+    summary: '작업 복원 (모바일)',
+    description: '종료된 작업을 ACTIVE로 되돌립니다. ENDED → ACTIVE.',
+  })
+  @ApiParam({ name: 'id', description: '작업 UUID' })
+  @ApiResponse({ status: 200, description: '복원 완료' })
+  @ApiResponse({ status: 400, description: '종료 상태가 아닌 작업' })
+  @ApiResponse({ status: 404, description: '작업 없음' })
+  restoreWorkItemMobile(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Req() req: Request,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    const ip = req.ip || req.socket.remoteAddress;
+    const userAgent = req.headers['user-agent'];
+    return this.workItemsService.restoreWorkItem(id, user, ip, userAgent);
+  }
+
+  @Post('admin/work-items/:id/restore')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN', 'SUPERVISOR')
+  @ApiBearerAuth('jwt')
+  @ApiTags('Admin Work Items')
+  @ApiOperation({ summary: '작업 복원 (관리자) — ENDED → ACTIVE' })
+  @ApiParam({ name: 'id', description: '작업 UUID' })
+  @ApiResponse({ status: 200, description: '복원 완료' })
+  restoreWorkItemAdmin(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Req() req: Request,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    const ip = req.ip || req.socket.remoteAddress;
+    const userAgent = req.headers['user-agent'];
+    return this.workItemsService.restoreWorkItem(id, user, ip, userAgent);
+  }
+
   @Delete('mobile/work-items/:id')
   @UseGuards(JwtAuthGuard)
   @ApiTags('Mobile Work Items')
@@ -205,8 +247,11 @@ export class WorkItemsController {
   @ApiParam({ name: 'id', description: '작업 UUID' })
   @ApiResponse({ status: 200, description: '작업 상세 정보' })
   @ApiResponse({ status: 404, description: '작업 없음' })
-  findOneForAdmin(@Param('id', ParseUUIDPipe) id: string) {
-    return this.workItemsService.findOneForAdmin(id);
+  findOneForAdmin(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.workItemsService.findOneForAdmin(id, user);
   }
 
   @Patch('admin/work-items/:id')
@@ -229,7 +274,7 @@ export class WorkItemsController {
   ) {
     const ip = req.ip || req.socket.remoteAddress;
     const userAgent = req.headers['user-agent'];
-    return this.workItemsService.updateForAdmin(id, dto, user.sub, ip, userAgent);
+    return this.workItemsService.updateForAdmin(id, dto, user.sub, ip, userAgent, user);
   }
 
   @Post('admin/work-items/:id/void')
@@ -251,7 +296,7 @@ export class WorkItemsController {
   ) {
     const ip = req.ip || req.socket.remoteAddress;
     const userAgent = req.headers['user-agent'];
-    return this.workItemsService.voidWorkItem(id, dto, user.sub, ip, userAgent);
+    return this.workItemsService.voidWorkItem(id, dto, user.sub, ip, userAgent, user);
   }
 
   @Post('admin/work-items/:id/force-end')
@@ -274,7 +319,7 @@ export class WorkItemsController {
   ) {
     const ip = req.ip || req.socket.remoteAddress;
     const userAgent = req.headers['user-agent'];
-    return this.workItemsService.forceEnd(id, dto, user.sub, ip, userAgent);
+    return this.workItemsService.forceEnd(id, dto, user.sub, ip, userAgent, user);
   }
 
   @Delete('admin/work-items/:id')
@@ -285,7 +330,10 @@ export class WorkItemsController {
   @ApiTags('Admin Work Items')
   @ApiOperation({ summary: '작업 기록 삭제 (관리자)' })
   @ApiParam({ name: 'id', description: '작업 UUID' })
-  deleteWorkItem(@Param('id', ParseUUIDPipe) id: string) {
-    return this.workItemsService.deleteWorkItem(id);
+  deleteWorkItem(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.workItemsService.deleteWorkItem(id, user);
   }
 }

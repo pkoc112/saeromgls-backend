@@ -11,6 +11,7 @@ import {
   HttpCode,
   HttpStatus,
   BadRequestException,
+  ForbiddenException,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -96,7 +97,15 @@ export class SitesController {
   @ApiOperation({ summary: '사업장 활성/비활성 토글' })
   @ApiParam({ name: 'id', description: '사업장 UUID' })
   @ApiResponse({ status: 200, description: '토글 완료' })
-  toggleActive(@Param('id', ParseUUIDPipe) id: string) {
+  @ApiResponse({ status: 403, description: '다른 사업장 토글 불가' })
+  toggleActive(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    // ★ 소유권 검증: MASTER 외엔 자기 사업장만 토글
+    if (user.role !== 'MASTER' && user.siteId !== id) {
+      throw new ForbiddenException('소속 사업장만 토글할 수 있습니다');
+    }
     return this.sitesService.toggleActive(id);
   }
 
@@ -130,7 +139,15 @@ export class SitesController {
   @ApiOperation({ summary: '작업자 일괄 이관 (관리자 전용)' })
   @ApiParam({ name: 'id', description: '대상 사업장 UUID' })
   @ApiResponse({ status: 200, description: '이관 완료 (이관 건수 반환)' })
-  migrateWorkers(@Param('id', ParseUUIDPipe) id: string) {
+  @ApiResponse({ status: 403, description: '다른 사업장으로 이관 불가' })
+  migrateWorkers(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    // ★ 소유권 검증: MASTER 외엔 자기 사업장으로만 이관 가능
+    if (user.role !== 'MASTER' && user.siteId !== id) {
+      throw new ForbiddenException('자기 사업장으로만 이관할 수 있습니다');
+    }
     return this.sitesService.migrateWorkersToSite(id);
   }
 

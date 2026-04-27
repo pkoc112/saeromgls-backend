@@ -7,6 +7,7 @@ import {
   Query,
   UseGuards,
   ParseUUIDPipe,
+  BadRequestException,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -59,7 +60,11 @@ export class DockController {
     @Body() dto: CreateDockSessionDto,
     @CurrentUser() user: JwtPayload,
   ) {
-    const siteId = resolveSiteId(user, undefined) || '';
+    // ★ siteId가 없으면 명시적 거부 (이전엔 빈 문자열 → DB 오염 위험)
+    const siteId = resolveSiteId(user, undefined);
+    if (!siteId) {
+      throw new BadRequestException('사업장이 배정되지 않은 사용자는 도크 세션을 생성할 수 없습니다');
+    }
     return this.dockService.create(dto, siteId, user.sub);
   }
 

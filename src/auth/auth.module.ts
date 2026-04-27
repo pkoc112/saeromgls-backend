@@ -16,7 +16,8 @@ import { JwtStrategy } from './jwt.strategy';
         return process.env.JWT_SECRET || 'fallback-secret-for-dev';
       })(),
       signOptions: {
-        expiresIn: process.env.JWT_EXPIRES_IN || '8h',
+        // ★ Access TTL 1h (CLAUDE.md 규정), refresh로 갱신
+        expiresIn: process.env.JWT_EXPIRES_IN || '1h',
       },
     }),
   ],

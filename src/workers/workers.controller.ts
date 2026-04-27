@@ -12,6 +12,7 @@ import {
   HttpCode,
   HttpStatus,
   ForbiddenException,
+  BadRequestException,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -21,6 +22,7 @@ import {
   ApiQuery,
   ApiParam,
 } from '@nestjs/swagger';
+import { Throttle } from '@nestjs/throttler';
 import { WorkersService } from './workers.service';
 import { CreateWorkerDto } from './dto/create-worker.dto';
 import { UpdateWorkerDto } from './dto/update-worker.dto';
@@ -151,11 +153,24 @@ export class WorkersController {
   @ApiTags('Mobile Workers')
   @ApiOperation({
     summary: '활성 작업자 목록 (모바일)',
-    description: '인증 불필요. PIN 로그인 화면에서 작업자 선택용.',
+    description:
+      'PIN 로그인 화면에서 작업자 선택용. 인증은 없지만 siteId 필수(UUID) + Throttle로 brute-force 방어.',
   })
-  @ApiQuery({ name: 'siteId', required: false, description: '사업장 ID로 필터' })
+  @ApiQuery({ name: 'siteId', required: true, description: '사업장 UUID (필수)' })
   @ApiResponse({ status: 200, description: '활성 작업자 목록 (최소 필드)' })
+  @ApiResponse({ status: 400, description: 'siteId 필수 또는 형식 오류' })
+  // ★ siteId 강제 + UUID 형식 검증 + 분당 30회 제한 (PIN 로그인 정상 흐름엔 충분)
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
   findActiveForMobile(@Query('siteId') siteId?: string) {
+    // 누락 시 거부 (이전엔 누락 시 전체 사업장 조회되어 cross-tenant leak)
+    if (!siteId) {
+      throw new BadRequestException('siteId는 필수입니다');
+    }
+    // UUID 형식 검증 — brute-force 방어
+    const uuidRegex = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+    if (!uuidRegex.test(siteId)) {
+      throw new BadRequestException('siteId는 UUID 형식이어야 합니다');
+    }
     return this.workersService.findActiveForMobile(siteId);
   }
 }

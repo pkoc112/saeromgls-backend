@@ -88,8 +88,12 @@ export class BreakConfigsController {
   update(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateBreakConfigDto,
+    @CurrentUser() user: JwtPayload,
   ) {
-    return this.breakConfigsService.update(id, dto);
+    return this.breakConfigsService.update(id, dto, {
+      role: user.role,
+      siteId: user.siteId,
+    });
   }
 
   @Delete('admin/break-configs/:id')
@@ -105,8 +109,14 @@ export class BreakConfigsController {
   @ApiParam({ name: 'id', description: '휴게시간 설정 UUID' })
   @ApiResponse({ status: 204, description: '삭제(비활성화) 완료' })
   @ApiResponse({ status: 404, description: '설정 없음' })
-  remove(@Param('id', ParseUUIDPipe) id: string) {
-    return this.breakConfigsService.remove(id);
+  remove(
+    @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.breakConfigsService.remove(id, {
+      role: user.role,
+      siteId: user.siteId,
+    });
   }
 
   // ===================== Mobile Endpoints =====================

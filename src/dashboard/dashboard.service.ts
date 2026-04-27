@@ -29,6 +29,7 @@ export class DashboardService {
     });
     const countMap = Object.fromEntries(statusCounts.map(s => [s.status, s._count]));
     const totalActive = countMap['ACTIVE'] || 0;
+    const totalPaused = countMap['PAUSED'] || 0;
     const totalEnded = countMap['ENDED'] || 0;
     const totalVoid = countMap['VOID'] || 0;
 
@@ -117,9 +118,11 @@ export class DashboardService {
       period: { from, to },
       counts: {
         active: totalActive,
+        paused: totalPaused,
         ended: totalEnded,
         void: totalVoid,
-        total: totalActive + totalEnded + totalVoid,
+        // ★ PAUSED 포함 (이전엔 누락되어 위젯/대시보드 합계 어긋남 — CLAUDE.md 함정 #14)
+        total: totalActive + totalPaused + totalEnded + totalVoid,
       },
       aggregates: {
         totalVolume: Number(aggregates._sum.volume ?? 0),

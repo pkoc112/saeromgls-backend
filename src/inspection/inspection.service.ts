@@ -190,10 +190,15 @@ export class InspectionService {
   /**
    * 검수 기록 생성 (종료된 작업 기준)
    */
-  async create(dto: CreateInspectionDto, siteId: string, inspectedByWorkerId: string) {
+  async create(
+    dto: CreateInspectionDto,
+    siteId: string | undefined,
+    inspectedByWorkerId: string,
+  ) {
     // 대상 작업 확인
     const workItem = await this.prisma.workItem.findUnique({
       where: { id: dto.sourceWorkItemId },
+      include: { startedByWorker: { select: { siteId: true } } },
     });
 
     if (!workItem) {
@@ -212,9 +217,18 @@ export class InspectionService {
       throw new BadRequestException('유효하지 않은 검수자입니다');
     }
 
+    // ★ siteId가 미지정이면 대상 작업 작업자의 siteId 사용 (MASTER 케이스)
+    // 그래도 없으면 (legacy 작업자 siteId NULL) BadRequest로 거부 — 빈 문자열로 DB 오염 방지
+    const effectiveSiteId = siteId || workItem.startedByWorker?.siteId;
+    if (!effectiveSiteId) {
+      throw new BadRequestException(
+        '대상 작업의 사업장 정보를 알 수 없습니다 — 작업자에게 사업장을 배정해주세요',
+      );
+    }
+
     const record = await this.prisma.inspectionRecord.create({
       data: {
-        siteId,
+        siteId: effectiveSiteId,
         sourceWorkItemId: dto.sourceWorkItemId,
         inspectedByWorkerId,
         result: dto.result,

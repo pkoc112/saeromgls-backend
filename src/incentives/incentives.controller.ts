@@ -21,6 +21,8 @@ import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { Roles } from '../auth/roles.decorator';
 import { RolesGuard } from '../auth/roles.guard';
 import { CurrentUser, JwtPayload } from '../common/decorators/current-user.decorator';
+import { Feature } from '../common/decorators/feature.decorator';
+import { EntitlementGuard } from '../common/guards/entitlement.guard';
 import { resolveSiteId } from '../common/utils/site-scope';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateObjectionDto } from './dto/create-objection.dto';
@@ -32,7 +34,9 @@ import { IncentivesService } from './incentives.service';
 @ApiTags('Admin Incentives')
 @ApiBearerAuth('jwt')
 @Controller('admin/incentives')
-@UseGuards(JwtAuthGuard, RolesGuard)
+@UseGuards(JwtAuthGuard, RolesGuard, EntitlementGuard)
+// ★ 인센티브 모듈 전체에 EntitlementGuard 적용 — Plan.features에 'INCENTIVE' 있어야 사용 가능
+@Feature('INCENTIVE')
 export class IncentivesController {
   constructor(
     private readonly incentivesService: IncentivesService,

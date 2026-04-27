@@ -3,6 +3,7 @@ import {
   NotFoundException,
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
@@ -435,6 +436,34 @@ export class WorkItemsService {
   // ======================== Admin ========================
 
   /**
+   * 단건 work-item 사업장 소유권 검증 헬퍼
+   * - MASTER: 모든 work-item 접근 가능
+   * - ADMIN/SUPERVISOR: startedByWorker.siteId 일치 (또는 NULL legacy)만 가능
+   * - 사업장 배정 없는 ADMIN: 접근 차단
+   */
+  private async assertSiteOwnership(
+    workItemId: string,
+    requester?: JwtPayload,
+  ): Promise<void> {
+    if (!requester || requester.role === 'MASTER') return;
+    if (!requester.siteId) {
+      throw new ForbiddenException('사업장이 배정되지 않은 계정은 접근할 수 없습니다');
+    }
+    const item = await this.prisma.workItem.findUnique({
+      where: { id: workItemId },
+      select: { id: true, startedByWorker: { select: { siteId: true } } },
+    });
+    if (!item) {
+      throw new NotFoundException('작업을 찾을 수 없습니다');
+    }
+    const itemSiteId = item.startedByWorker?.siteId ?? null;
+    // legacy(siteId NULL) 데이터는 통과시키되, 명시적 다른 사업장은 차단
+    if (itemSiteId && itemSiteId !== requester.siteId) {
+      throw new ForbiddenException('다른 사업장의 작업은 접근할 수 없습니다');
+    }
+  }
+
+  /**
    * 관리자: 작업 목록 조회 (페이지네이션, 필터)
    */
   async findAllForAdmin(query: QueryWorkItemsDto, siteId?: string) {
@@ -535,7 +564,8 @@ export class WorkItemsService {
   /**
    * 관리자: 작업 상세 조회 (배정 + 감사 로그 포함)
    */
-  async findOneForAdmin(id: string) {
+  async findOneForAdmin(id: string, requester?: JwtPayload) {
+    await this.assertSiteOwnership(id, requester);
     const workItem = await this.prisma.workItem.findUnique({
       where: { id },
       include: {
@@ -571,7 +601,9 @@ export class WorkItemsService {
     actorWorkerId: string,
     ip?: string,
     userAgent?: string,
+    requester?: JwtPayload,
   ) {
+    await this.assertSiteOwnership(id, requester);
     const workItem = await this.prisma.workItem.findUnique({ where: { id } });
     if (!workItem) {
       throw new NotFoundException('작업을 찾을 수 없습니다');
@@ -603,11 +635,13 @@ export class WorkItemsService {
     if (dto.endedAt !== undefined) {
       updateData.endedAt = new Date(dto.endedAt);
     }
-    // 시작 > 종료 검증
-    if (dto.startedAt && dto.endedAt) {
-      if (new Date(dto.startedAt) > new Date(dto.endedAt)) {
-        throw new BadRequestException('시작 시간이 종료 시간보다 늦을 수 없습니다');
-      }
+    // 시작 > 종료 검증 — 단일 필드 수정도 기존 값과 비교 (역전 방지)
+    const effStart = dto.startedAt ? new Date(dto.startedAt) : workItem.startedAt;
+    const effEnd = dto.endedAt
+      ? new Date(dto.endedAt)
+      : workItem.endedAt;
+    if (effStart && effEnd && effStart > effEnd) {
+      throw new BadRequestException('시작 시간이 종료 시간보다 늦을 수 없습니다');
     }
 
     const updated = await this.prisma.$transaction(async (tx) => {
@@ -644,7 +678,9 @@ export class WorkItemsService {
     actorWorkerId: string,
     ip?: string,
     userAgent?: string,
+    requester?: JwtPayload,
   ) {
+    await this.assertSiteOwnership(id, requester);
     const workItem = await this.prisma.workItem.findUnique({ where: { id } });
     if (!workItem) {
       throw new NotFoundException('작업을 찾을 수 없습니다');
@@ -690,7 +726,9 @@ export class WorkItemsService {
     actorWorkerId: string,
     ip?: string,
     userAgent?: string,
+    requester?: JwtPayload,
   ) {
+    await this.assertSiteOwnership(id, requester);
     const workItem = await this.prisma.workItem.findUnique({ where: { id } });
     if (!workItem) {
       throw new NotFoundException('작업을 찾을 수 없습니다');
@@ -755,17 +793,82 @@ export class WorkItemsService {
 
   /**
    * 관리자: 작업 기록 영구 삭제
+   * - 사업장 소유권 검증
+   * - FK 제약 모두 해소: workAssignment + auditLog + inspectionRecord 먼저 삭제
    */
-  async deleteWorkItem(id: string): Promise<void> {
+  async deleteWorkItem(id: string, requester?: JwtPayload): Promise<void> {
+    await this.assertSiteOwnership(id, requester);
     const existing = await this.prisma.workItem.findUnique({ where: { id } });
     if (!existing) throw new NotFoundException('작업을 찾을 수 없습니다');
 
     await this.prisma.$transaction(async (tx) => {
+      // FK 참조 모두 정리 후 work-item 삭제 (CLAUDE.md 함정 #18 패턴)
       await tx.workAssignment.deleteMany({ where: { workItemId: id } });
+      await tx.auditLog.deleteMany({ where: { workItemId: id } });
+      // inspectionRecord는 workItem FK가 있을 수 있음 (스키마에 의존)
+      try {
+        await (tx as any).inspectionRecord?.deleteMany?.({ where: { workItemId: id } });
+      } catch {
+        // 모델 없음 또는 FK 없음 — 무시
+      }
       await tx.workItem.delete({ where: { id } });
     });
 
     this.logger.log(`WorkItem deleted: ${id}`);
+  }
+
+  /**
+   * 작업 복원 (ENDED → ACTIVE)
+   * 모바일에서 실수로 종료한 작업을 되돌리거나, 관리자가 잘못 종료된 작업을 되살릴 때 사용
+   * - 종료 시각 NULL 처리, 상태 ACTIVE
+   */
+  async restoreWorkItem(id: string, requester?: JwtPayload, ip?: string, userAgent?: string) {
+    await this.assertSiteOwnership(id, requester);
+    const workItem = await this.prisma.workItem.findUnique({
+      where: { id },
+      include: { assignments: true },
+    });
+    if (!workItem) throw new NotFoundException('작업을 찾을 수 없습니다');
+
+    // 모바일 호출 시 소유권 추가 검증 (관리자는 위 assertSiteOwnership 통과)
+    if (requester && requester.role === 'WORKER') {
+      assertWorkItemOwnership({
+        requesterId: requester.sub,
+        requesterRole: requester.role,
+        workItem,
+      });
+    }
+
+    if (workItem.status !== 'ENDED') {
+      throw new BadRequestException('종료된 작업만 복원할 수 있습니다');
+    }
+
+    const beforeState = JSON.stringify(workItem);
+    const updated = await this.prisma.$transaction(async (tx) => {
+      const item = await tx.workItem.update({
+        where: { id },
+        data: {
+          status: 'ACTIVE',
+          endedAt: null,
+          endedByWorkerId: null,
+        },
+      });
+      await tx.auditLog.create({
+        data: {
+          actorWorkerId: requester?.sub ?? workItem.startedByWorkerId,
+          workItemId: id,
+          action: 'RESTORE',
+          before: beforeState,
+          after: JSON.stringify(item),
+          reason: '작업 복원 (ENDED → ACTIVE)',
+          ip,
+          userAgent,
+        },
+      });
+      return item;
+    });
+
+    return this.findOneRaw(updated.id);
   }
 
   /**

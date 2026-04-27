@@ -5,6 +5,7 @@ import {
   Body,
   Query,
   UseGuards,
+  BadRequestException,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -83,10 +84,12 @@ export class InspectionController {
     @CurrentUser() user: JwtPayload,
   ) {
     const siteId = resolveSiteId(user, undefined);
-    if (!siteId) {
-      // MASTER의 경우 대상 작업의 siteId를 사용해야 하므로 서비스에서 처리
+    // ★ ADMIN/SUPERVISOR는 반드시 siteId가 있어야 함 (없으면 거부, 빈 문자열로 DB 오염 방지)
+    // MASTER는 siteId가 undefined일 수 있는데, 그 경우 서비스에서 대상 작업의 siteId 사용
+    if (user.role !== 'MASTER' && !siteId) {
+      throw new BadRequestException('사업장이 배정되지 않은 사용자는 검수 기록을 생성할 수 없습니다');
     }
-    return this.inspectionService.create(dto, siteId || '', user.sub);
+    return this.inspectionService.create(dto, siteId, user.sub);
   }
 
   @Get('stats')

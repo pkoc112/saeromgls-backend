@@ -4,5 +4,15 @@
   "outputDirectory": "public",
   "rewrites": [
     { "source": "/(.*)", "destination": "/api" }
+  ],
+  "crons": [
+    {
+      "path": "/api/cron/subscription-check",
+      "schedule": "0 18 * * *"
+    },
+    {
+      "path": "/api/cron/data-retention-purge",
+      "schedule": "0 17 1 * *"
+    }
   ]
 }

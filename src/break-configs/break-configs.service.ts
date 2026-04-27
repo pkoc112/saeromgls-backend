@@ -3,6 +3,7 @@ import {
   BadRequestException,
   ConflictException,
   NotFoundException,
+  ForbiddenException,
   Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
@@ -89,15 +90,31 @@ export class BreakConfigsService {
   }
 
   /**
-   * 휴게시간 설정 수정
+   * 휴게시간 설정 수정 — 소유권 검증 포함
+   * - MASTER: 모든 설정 수정 가능
+   * - ADMIN: 자기 사업장 설정만 (전역 설정은 MASTER 전용)
    */
-  async update(id: string, dto: UpdateBreakConfigDto) {
+  async update(
+    id: string,
+    dto: UpdateBreakConfigDto,
+    requester?: { role: string; siteId?: string },
+  ) {
     const existing = await this.prisma.breakConfig.findUnique({
       where: { id },
     });
 
     if (!existing) {
       throw new NotFoundException('휴게시간 설정을 찾을 수 없습니다');
+    }
+
+    // ★ 소유권 검증
+    if (requester && requester.role !== 'MASTER') {
+      if (existing.siteId === null) {
+        throw new ForbiddenException('전역 휴게시간 설정은 MASTER만 수정할 수 있습니다');
+      }
+      if (existing.siteId !== requester.siteId) {
+        throw new ForbiddenException('다른 사업장의 휴게시간 설정은 수정할 수 없습니다');
+      }
     }
 
     // 시간 관련 필드가 변경되는 경우에만 유효성 검사
@@ -130,15 +147,25 @@ export class BreakConfigsService {
   }
 
   /**
-   * 휴게시간 설정 비활성화 (소프트 삭제)
+   * 휴게시간 설정 비활성화 (소프트 삭제) — 소유권 검증 포함
    */
-  async remove(id: string) {
+  async remove(id: string, requester?: { role: string; siteId?: string }) {
     const existing = await this.prisma.breakConfig.findUnique({
       where: { id },
     });
 
     if (!existing) {
       throw new NotFoundException('휴게시간 설정을 찾을 수 없습니다');
+    }
+
+    // ★ 소유권 검증
+    if (requester && requester.role !== 'MASTER') {
+      if (existing.siteId === null) {
+        throw new ForbiddenException('전역 휴게시간 설정은 MASTER만 삭제할 수 있습니다');
+      }
+      if (existing.siteId !== requester.siteId) {
+        throw new ForbiddenException('다른 사업장의 휴게시간 설정은 삭제할 수 없습니다');
+      }
     }
 
     await this.prisma.breakConfig.delete({

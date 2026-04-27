@@ -70,6 +70,8 @@ export class AuthController {
   @ApiTags('Auth')
   @ApiOperation({ summary: '토큰 갱신' })
   @ApiResponse({ status: 200, description: '새 토큰 반환' })
+  // ★ Refresh token도 brute force 방어 (탈취 시도 차단)
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
   async refreshToken(@Body() dto: RefreshTokenDto) {
     return this.authService.refreshAccessToken(dto.refreshToken);
   }
@@ -77,6 +79,8 @@ export class AuthController {
   @Get('auth/verify-employee-code/:code')
   @ApiTags('Auth')
   @ApiOperation({ summary: '사번 유효성 검증(회원가입 연결용)' })
+  // ★ 사번 enumeration 방어
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   async verifyEmployeeCode(@Param('code') code: string) {
     return this.authService.verifyEmployeeCode(code);
   }
@@ -87,6 +91,8 @@ export class AuthController {
   @ApiOperation({ summary: '회원가입(사번 연결 또는 신규 생성)' })
   @ApiBody({ type: RegisterDto })
   @ApiResponse({ status: 201, description: '회원가입 성공' })
+  // ★ 가입 spam 방어
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   async register(@Body() dto: RegisterDto) {
     return this.authService.register(dto);
   }
@@ -133,6 +139,8 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @ApiTags('Auth')
   @ApiOperation({ summary: '비밀번호 재설정(이메일 인증 코드 필요)' })
+  // ★ 6자리 코드 brute force 방어
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
   async resetPassword(@Body() dto: ResetPasswordDto) {
     return this.authService.resetPassword(
       dto.email,
@@ -145,6 +153,8 @@ export class AuthController {
   @Get('auth/check-email/:email')
   @ApiTags('Auth')
   @ApiOperation({ summary: '이메일 중복 확인' })
+  // ★ 이메일 enumeration 방어
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   async checkEmail(@Param('email') email: string) {
     const available = await this.authService.checkEmailAvailable(email);
     return { available };
@@ -154,6 +164,8 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @ApiTags('Auth')
   @ApiOperation({ summary: '이메일 인증 코드 발급' })
+  // ★ 메일 폭주 방어 — 동일 IP에서 분당 3회까지
+  @Throttle({ default: { limit: 3, ttl: 60_000 } })
   async sendVerification(@Body() dto: { email: string }) {
     return this.authService.sendVerificationCode(dto.email);
   }
@@ -162,6 +174,8 @@ export class AuthController {
   @HttpCode(HttpStatus.OK)
   @ApiTags('Auth')
   @ApiOperation({ summary: '이메일 인증 확인' })
+  // ★ 6자리 코드 brute force 방어
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
   async verifyEmail(@Body() dto: { email: string; code: string }) {
     return this.authService.verifyEmail(dto.email, dto.code);
   }

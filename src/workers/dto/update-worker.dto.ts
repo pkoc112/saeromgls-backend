@@ -33,11 +33,13 @@ export class UpdateWorkerDto {
   pin?: string;
 
   @ApiProperty({
-    description: '역할',
-    enum: ['ADMIN', 'SUPERVISOR', 'WORKER'],
+    description: '역할 (MASTER는 별도 절차 — 일반 update에서 거부)',
+    enum: ['MASTER', 'ADMIN', 'SUPERVISOR', 'WORKER'],
     required: false,
   })
-  @IsIn(['ADMIN', 'SUPERVISOR', 'WORKER'])
+  // MASTER 포함하여 거부 안 됨 (UI 드롭다운에 MASTER 표시되므로 백엔드도 통과시킴)
+  // 단, MASTER 승격은 service 레벨에서 별도 검증 필요 (현재는 controller에서 차단됨)
+  @IsIn(['MASTER', 'ADMIN', 'SUPERVISOR', 'WORKER'])
   @IsOptional()
   role?: string;
 

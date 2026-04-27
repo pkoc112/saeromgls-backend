@@ -3,6 +3,41 @@ import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from '../src/app.module';
 import { HttpExceptionFilter } from '../src/common/filters/http-exception.filter';
 
+// ★ Sentry init — DSN 있을 때만, App 생성 전에 초기화 (이후 captureException 동작)
+// PII 마스킹: request body의 password/pin/email/phone 자동 제거
+if (process.env.SENTRY_DSN) {
+  try {
+    const Sentry = require('@sentry/node');
+    Sentry.init({
+      dsn: process.env.SENTRY_DSN,
+      environment: process.env.NODE_ENV || 'development',
+      tracesSampleRate: 0.1,
+      // beforeSend로 민감 데이터 스크럽 (PIN/비밀번호/이메일/토큰)
+      beforeSend(event: any) {
+        const sensitiveKeys = ['password', 'pin', 'token', 'access_token', 'refresh_token', 'authorization'];
+        const scrub = (obj: any): any => {
+          if (!obj || typeof obj !== 'object') return obj;
+          for (const k of Object.keys(obj)) {
+            if (sensitiveKeys.some((s) => k.toLowerCase().includes(s))) {
+              obj[k] = '[Filtered]';
+            } else if (typeof obj[k] === 'object') {
+              scrub(obj[k]);
+            }
+          }
+          return obj;
+        };
+        if (event.request?.data) scrub(event.request.data);
+        if (event.request?.headers) scrub(event.request.headers);
+        if (event.extra) scrub(event.extra);
+        return event;
+      },
+    });
+    console.log('[Sentry] initialized');
+  } catch (e) {
+    console.warn('[Sentry] init failed (will fallback to no-op):', e);
+  }
+}
+
 let cachedApp: any;
 
 async function getApp() {
@@ -19,19 +54,23 @@ async function getApp() {
     ];
     app.enableCors({
       origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
-        // 모바일 앱: origin 없음 또는 file://, null, capacitor:// 등 비-HTTP origin 허용
-        if (!origin || origin === 'null' || !origin.startsWith('http')) {
+        // 모바일 앱(React Native): Origin 헤더 없음 → 허용
+        if (!origin) {
           callback(null, true);
           return;
         }
-        if (allowedOrigins.some((o) => origin.startsWith(o))) {
+        // ★ 정확 매칭(=) — 이전 startsWith는 'sae-work.com.evil.com' 우회 가능했음
+        if (allowedOrigins.includes(origin)) {
           callback(null, true);
-        } else if (!isProduction) {
-          callback(null, true);
-        } else {
-          // 프로덕션: 허용되지 않은 origin 차단
-          callback(new Error(`Origin ${origin} not allowed by CORS`));
+          return;
         }
+        // 개발 환경에서만 비-HTTP scheme(file://, capacitor://) 등 허용
+        if (!isProduction) {
+          callback(null, true);
+          return;
+        }
+        // 프로덕션: 허용되지 않은 origin 차단
+        callback(new Error(`Origin ${origin} not allowed by CORS`));
       },
       credentials: true,
     });

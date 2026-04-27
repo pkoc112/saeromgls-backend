@@ -240,14 +240,19 @@ export class AuthService {
       },
     });
 
+    // ★ Enumeration 방어: 이메일 미존재/비밀번호 미설정/비밀번호 오류 모두
+    // 동일한 메시지로 통일하여 계정 존재 여부를 알 수 없게 함.
+    const GENERIC_AUTH_FAILURE = '이메일 또는 비밀번호가 올바르지 않습니다';
+
     if (!worker) {
-      throw new UnauthorizedException('등록되지 않은 이메일입니다');
+      throw new UnauthorizedException(GENERIC_AUTH_FAILURE);
     }
     if (!worker.passwordHash) {
-      throw new UnauthorizedException('비밀번호가 설정되지 않은 계정입니다. 비밀번호 재설정을 해주세요.');
+      // 비밀번호 미설정도 동일 메시지 (직접 안내는 비밀번호 재설정 화면에서)
+      throw new UnauthorizedException(GENERIC_AUTH_FAILURE);
     }
 
-    // 계정 잠금 확인
+    // 계정 잠금 확인 — 잠금 안내는 보안 vs UX 트레이드오프상 노출 유지(편의)
     const isLocked = await this.checkAccountLocked(worker.id);
     if (isLocked) {
       throw new UnauthorizedException(
@@ -257,21 +262,22 @@ export class AuthService {
 
     if (worker.status !== 'ACTIVE') {
       await this.recordLoginHistory(worker.id, false, ipAddress, userAgent);
-      throw new UnauthorizedException('비활성화된 계정입니다');
+      // 비활성 계정도 동일 메시지로 enumeration 방어
+      throw new UnauthorizedException(GENERIC_AUTH_FAILURE);
     }
 
-    // WORKER 역할은 웹 로그인 차단 (모바일 앱 전용)
+    // WORKER 역할은 웹 로그인 차단 — 명확한 안내 유지 (UX 우선, 이미 비밀번호 통과 가정)
+    const isValid = await bcrypt.compare(password, worker.passwordHash);
+    if (!isValid) {
+      await this.recordLoginHistory(worker.id, false, ipAddress, userAgent);
+      throw new UnauthorizedException(GENERIC_AUTH_FAILURE);
+    }
+
     if (worker.role === 'WORKER') {
       await this.recordLoginHistory(worker.id, false, ipAddress, userAgent);
       throw new UnauthorizedException(
         '작업자 계정은 모바일 앱에서만 사용 가능합니다. 웹 접근이 필요하면 관리자에게 역할 변경을 요청하세요.',
       );
-    }
-
-    const isValid = await bcrypt.compare(password, worker.passwordHash);
-    if (!isValid) {
-      await this.recordLoginHistory(worker.id, false, ipAddress, userAgent);
-      throw new UnauthorizedException('비밀번호가 올바르지 않습니다');
     }
 
     // 성공 기록
@@ -470,8 +476,8 @@ export class AuthService {
 
     return {
       message: '인증 코드가 발송되었습니다',
-      // 개발 환경에서만 코드 직접 반환 (운영에서는 이메일로만 수신)
-      ...(process.env.NODE_ENV !== 'production' && { code }),
+      // ★ 코드는 응답 body에 절대 포함하지 않음 (preview/staging 노출 위험).
+      // dev에서는 위 logger.log 로 서버 콘솔에서 확인 가능.
     };
   }
 
