@@ -13,7 +13,8 @@ jobs:
 
       - name: Create backup
         env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          # Neon pooled URL은 pg_dump가 정상 dump 못 하므로 unpooled(direct) URL 사용
+          DATABASE_URL: ${{ secrets.DATABASE_URL_DIRECT }}
         run: |
           # Vercel env pull 시 trailing whitespace/newline이 secret에 섞여 들어가
           # pg_dump는 통과하나 psql이 sslmode 파싱에서 깨지므로 명시적으로 정리.
@@ -33,7 +34,8 @@ jobs:
 
       - name: Verify backup
         env:
-          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+          # Neon pooled URL은 pg_dump가 정상 dump 못 하므로 unpooled(direct) URL 사용
+          DATABASE_URL: ${{ secrets.DATABASE_URL_DIRECT }}
         run: |
           CLEAN_URL=$(printf %s "$DATABASE_URL" | tr -d '[:space:]')
           # 테이블 수 확인
