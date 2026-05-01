@@ -99,7 +99,14 @@ export class IncentivesService {
     return pv;
   }
 
-  async updatePolicyStatus(id: string, status: string) {
+  /** SHADOW에서 ACTIVE로 승격하기 전 최소 운영 기간(일) — 4주 검증 윈도우 */
+  static readonly SHADOW_PROMOTION_MIN_DAYS = 28;
+
+  async updatePolicyStatus(
+    id: string,
+    status: string,
+    options: { force?: boolean; reason?: string; actorId?: string } = {},
+  ) {
     const validStatuses = ['DRAFT', 'SHADOW', 'ACTIVE', 'RETIRED'];
     if (!validStatuses.includes(status)) throw new BadRequestException(`유효하지 않은 상태입니다. 허용: ${validStatuses.join(', ')}`);
     const policy = await this.prisma.policyVersion.findUnique({ where: { id } });
@@ -107,6 +114,50 @@ export class IncentivesService {
     const transitions: Record<string, string[]> = { DRAFT: ['SHADOW', 'RETIRED'], SHADOW: ['ACTIVE', 'DRAFT', 'RETIRED'], ACTIVE: ['RETIRED'], RETIRED: [] };
     const allowed = transitions[policy.status] || [];
     if (!allowed.includes(status)) throw new BadRequestException(`${policy.status}에서 ${status}로 변경할 수 없습니다. 허용: ${allowed.join(', ') || '없음'}`);
+
+    // ── SHADOW → ACTIVE 게이트 ──
+    // 정책이 SHADOW에서 최소 28일 운영되었는지 검증한다.
+    // force=true 로 우회 가능 (감사로그에 reason 기록 필수).
+    if (policy.status === 'SHADOW' && status === 'ACTIVE') {
+      const shadowStart = policy.effectiveFrom;
+      const minDays = IncentivesService.SHADOW_PROMOTION_MIN_DAYS;
+      if (!options.force) {
+        if (!shadowStart) {
+          throw new BadRequestException(
+            'SHADOW 시작 시점이 기록되지 않았습니다. force=true + reason으로만 승격 가능합니다',
+          );
+        }
+        const elapsedMs = Date.now() - shadowStart.getTime();
+        const elapsedDays = Math.floor(elapsedMs / (24 * 60 * 60 * 1000));
+        if (elapsedDays < minDays) {
+          throw new BadRequestException(
+            `SHADOW 운영 ${elapsedDays}일째 — 승격을 위해 ${minDays}일 이상 필요합니다. ` +
+            `긴급 승격이 필요하면 force=true + reason을 함께 보내세요.`,
+          );
+        }
+      } else {
+        if (!options.reason || options.reason.trim().length < 5) {
+          throw new BadRequestException(
+            'force 승격 시 reason(5자 이상)이 필수입니다',
+          );
+        }
+        await this.prisma.adminActivityLog.create({
+          data: {
+            actorWorkerId: options.actorId || 'SYSTEM',
+            actionType: 'POLICY_FORCE_PROMOTE',
+            targetType: 'POLICY_VERSION',
+            targetId: id,
+            metadata: JSON.stringify({
+              from: policy.status,
+              to: status,
+              reason: options.reason,
+              shadowStartedAt: shadowStart?.toISOString() ?? null,
+            }),
+          },
+        });
+      }
+    }
+
     // 같은 트랙의 기존 ACTIVE → RETIRED (구버전 트랙명도 매핑)
     if (status === 'ACTIVE') {
       const resolvedTrack = resolveTrack(policy.track);
@@ -119,9 +170,19 @@ export class IncentivesService {
         data: { status: 'RETIRED', effectiveTo: new Date() },
       });
     }
+
+    // SHADOW로 처음 진입할 때 effectiveFrom을 기록 → 28일 게이트의 기준점.
+    // ACTIVE 진입 시에도 갱신(기존 동작 유지). RETIRED 시에는 effectiveTo만 갱신.
+    const shouldStampStart =
+      (status === 'SHADOW' && !policy.effectiveFrom) || status === 'ACTIVE';
+
     const updated = await this.prisma.policyVersion.update({
       where: { id },
-      data: { status, effectiveFrom: status === 'ACTIVE' ? new Date() : policy.effectiveFrom, effectiveTo: status === 'RETIRED' ? new Date() : policy.effectiveTo },
+      data: {
+        status,
+        effectiveFrom: shouldStampStart ? new Date() : policy.effectiveFrom,
+        effectiveTo: status === 'RETIRED' ? new Date() : policy.effectiveTo,
+      },
     });
     this.logger.log(`PolicyVersion ${id} status: ${policy.status} -> ${status}`);
     return updated;
@@ -835,5 +896,123 @@ export class IncentivesService {
         E: payoutData.filter((p) => p.grade === 'E').length,
       },
     };
+  }
+
+  // ════════════════════════════════════════════════════════════════
+  // 자동화 — 크론 호출용
+  // ════════════════════════════════════════════════════════════════
+
+  /**
+   * 모든 활성 사이트에 대해 지정 월의 ScoreRun을 일괄 생성한다.
+   * 기존에 같은 (site, policy, month) 조합이 FINALIZED 외 상태로 존재하면 스킵.
+   * SHADOW 정책은 자동으로 SHADOW ScoreRun이 되어 4주 그림자 검증 데이터로 누적된다.
+   */
+  async runMonthlyShadowForAllSites(month: string) {
+    if (!/^\d{4}-\d{2}$/.test(month)) {
+      throw new BadRequestException('month는 YYYY-MM 형식이어야 합니다');
+    }
+    const sites = await this.prisma.site.findMany({
+      where: { isActive: true },
+      select: { id: true, name: true },
+    });
+
+    const summary: Array<{
+      siteId: string;
+      siteName: string;
+      results: Array<{ track: string; status: string; runId?: string; error?: string }>;
+    }> = [];
+
+    for (const site of sites) {
+      try {
+        const result = await this.runAllTracks(site.id, month);
+        summary.push({
+          siteId: site.id,
+          siteName: site.name,
+          results: result.results,
+        });
+      } catch (e: any) {
+        summary.push({
+          siteId: site.id,
+          siteName: site.name,
+          results: [{ track: 'ALL', status: 'failed', error: e?.message || String(e) }],
+        });
+      }
+    }
+
+    const totalRuns = summary.reduce(
+      (s, x) => s + x.results.filter((r) => r.status === 'success').length,
+      0,
+    );
+    this.logger.log(`Monthly shadow run ${month}: ${totalRuns} runs across ${sites.length} sites`);
+    return { month, sitesProcessed: sites.length, totalRuns, summary };
+  }
+
+  /**
+   * FROZEN 상태가 graceDays를 넘었고 미해결 이의신청이 0건인 ScoreRun을 자동 FINALIZE.
+   * 운영자가 수동 확정을 잊어도 인센티브 흐름이 멈추지 않게 보장한다.
+   */
+  async autoFinalizeStaleFrozenRuns(graceDays = 7) {
+    const cutoff = new Date(Date.now() - graceDays * 24 * 60 * 60 * 1000);
+    const candidates = await this.prisma.scoreRun.findMany({
+      where: {
+        status: 'FROZEN',
+        frozenAt: { lt: cutoff, not: null },
+      },
+      select: { id: true, siteId: true, month: true, frozenAt: true },
+    });
+
+    const result = {
+      candidates: candidates.length,
+      finalized: 0,
+      skipped: [] as Array<{ runId: string; reason: string }>,
+    };
+
+    for (const run of candidates) {
+      const entryIds = await this.prisma.scoreEntry
+        .findMany({ where: { scoreRunId: run.id }, select: { id: true } })
+        .then((rs) => rs.map((r) => r.id));
+
+      const openObjections = entryIds.length
+        ? await this.prisma.objectionCase.count({
+            where: {
+              scoreEntryId: { in: entryIds },
+              status: { in: ['OPEN', 'REVIEWING'] },
+            },
+          })
+        : 0;
+
+      if (openObjections > 0) {
+        result.skipped.push({
+          runId: run.id,
+          reason: `미처리 이의신청 ${openObjections}건`,
+        });
+        continue;
+      }
+
+      await this.prisma.scoreRun.update({
+        where: { id: run.id },
+        data: { status: 'FINALIZED', finalizedAt: new Date() },
+      });
+      await this.prisma.adminActivityLog.create({
+        data: {
+          actorWorkerId: 'SYSTEM',
+          actionType: 'SCORE_RUN_AUTO_FINALIZE',
+          targetType: 'SCORE_RUN',
+          targetId: run.id,
+          metadata: JSON.stringify({
+            siteId: run.siteId,
+            month: run.month,
+            frozenAt: run.frozenAt?.toISOString() ?? null,
+            graceDays,
+          }),
+        },
+      });
+      result.finalized++;
+    }
+
+    this.logger.log(
+      `Auto-finalize: ${result.finalized}/${result.candidates} runs finalized (grace=${graceDays}d)`,
+    );
+    return result;
   }
 }

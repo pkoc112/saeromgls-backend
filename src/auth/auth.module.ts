@@ -10,10 +10,14 @@ import { JwtStrategy } from './jwt.strategy';
     PassportModule.register({ defaultStrategy: 'jwt' }),
     JwtModule.register({
       secret: (() => {
-        if (process.env.NODE_ENV === 'production' && !process.env.JWT_SECRET) {
-          throw new Error('JWT_SECRET required in production');
+        const secret = process.env.JWT_SECRET;
+        if (!secret) {
+          throw new Error('JWT_SECRET is required (no fallback allowed)');
         }
-        return process.env.JWT_SECRET || 'fallback-secret-for-dev';
+        if (process.env.NODE_ENV === 'production' && secret.length < 32) {
+          throw new Error('JWT_SECRET must be at least 32 characters in production');
+        }
+        return secret;
       })(),
       signOptions: {
         // ★ Access TTL 1h (CLAUDE.md 규정), refresh로 갱신

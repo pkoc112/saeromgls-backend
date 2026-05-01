@@ -160,13 +160,23 @@ export class IncentivesController {
 
   @Patch('policies/:id/status')
   @Roles('ADMIN')
-  @ApiOperation({ summary: '정책 상태 변경' })
+  @ApiOperation({
+    summary:
+      '정책 상태 변경 (SHADOW→ACTIVE 시 28일 검증 게이트, force=true + reason로 우회 가능)',
+  })
   @ApiParam({ name: 'id', description: '정책 버전 UUID' })
   updatePolicyStatus(
     @Param('id', ParseUUIDPipe) id: string,
     @Body('status') status: string,
+    @Body('force') force?: boolean,
+    @Body('reason') reason?: string,
+    @CurrentUser() user?: JwtPayload,
   ) {
-    return this.incentivesService.updatePolicyStatus(id, status);
+    return this.incentivesService.updatePolicyStatus(id, status, {
+      force: !!force,
+      reason,
+      actorId: user?.sub,
+    });
   }
 
   @Post('score-runs')

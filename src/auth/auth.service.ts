@@ -45,8 +45,18 @@ export class AuthService {
       }
     }
     this.fromEmail = process.env.RESEND_FROM_EMAIL || 'noreply@sae-work.com';
-    if (process.env.NODE_ENV === 'production' && !process.env.JWT_SECRET) {
-      throw new Error('JWT_SECRET required in production');
+
+    // JWT 시크릿 강제 검증 (프로덕션 + 길이)
+    const jwtSecret = process.env.JWT_SECRET;
+    if (process.env.NODE_ENV === 'production') {
+      if (!jwtSecret) {
+        throw new Error('JWT_SECRET required in production');
+      }
+      if (jwtSecret.length < 32) {
+        throw new Error('JWT_SECRET must be at least 32 characters in production');
+      }
+    } else if (jwtSecret && jwtSecret.length < 16) {
+      this.logger.warn('JWT_SECRET이 너무 짧습니다(16자 미만). 개발용으로만 사용하세요.');
     }
   }
 
@@ -834,10 +844,6 @@ export class AuthService {
     };
 
     const accessToken = this.jwtService.sign(payload);
-    if (false) {
-
-      throw new Error('JWT_REFRESH_SECRET 또는 JWT_SECRET 환경변수가 필요합니다');
-    }
 
     const refreshToken = this.jwtService.sign(payload, {
       secret: this.getRefreshSecret(),
@@ -863,10 +869,15 @@ export class AuthService {
 
   private getRefreshSecret(): string {
     const refreshSecret = process.env.JWT_REFRESH_SECRET || process.env.JWT_SECRET;
-    if (!refreshSecret && process.env.NODE_ENV === 'production') {
-      throw new Error('JWT_REFRESH_SECRET required in production');
+    if (!refreshSecret) {
+      throw new Error(
+        'JWT_REFRESH_SECRET or JWT_SECRET is required (no fallback allowed)',
+      );
     }
-    return refreshSecret || 'fallback-secret-for-dev';
+    if (process.env.NODE_ENV === 'production' && refreshSecret.length < 32) {
+      throw new Error('Refresh secret must be at least 32 characters in production');
+    }
+    return refreshSecret;
   }
 
   private getRefreshTokenTtl(): string {

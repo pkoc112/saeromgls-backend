@@ -7,13 +7,17 @@ import { JwtPayload } from '../common/decorators/current-user.decorator';
 @Injectable()
 export class JwtStrategy extends PassportStrategy(Strategy) {
   constructor(private readonly prisma: PrismaService) {
-    if (process.env.NODE_ENV === 'production' && !process.env.JWT_SECRET) {
-      throw new Error('JWT_SECRET required in production');
+    const secret = process.env.JWT_SECRET;
+    if (!secret) {
+      throw new Error('JWT_SECRET is required (no fallback allowed)');
+    }
+    if (process.env.NODE_ENV === 'production' && secret.length < 32) {
+      throw new Error('JWT_SECRET must be at least 32 characters in production');
     }
     super({
       jwtFromRequest: ExtractJwt.fromAuthHeaderAsBearerToken(),
       ignoreExpiration: false,
-      secretOrKey: process.env.JWT_SECRET || 'fallback-secret-for-dev',
+      secretOrKey: secret,
     });
   }
 

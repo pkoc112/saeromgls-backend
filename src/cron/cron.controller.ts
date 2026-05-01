@@ -2,6 +2,7 @@ import { Controller, Get, Headers, Logger, UnauthorizedException } from '@nestjs
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { IncentivesService } from '../incentives/incentives.service';
 
 /**
  * Vercel Cron 핸들러 — 외부에서 주기적으로 호출되어 자동 작업 수행
@@ -22,6 +23,7 @@ export class CronController {
   constructor(
     private readonly subscriptionsService: SubscriptionsService,
     private readonly prisma: PrismaService,
+    private readonly incentivesService: IncentivesService,
   ) {}
 
   private assertCronAuth(authHeader?: string): void {
@@ -152,5 +154,39 @@ export class CronController {
       this.logger.error(`Data retention purge failed: ${err}`);
       throw err;
     }
+  }
+
+  @Get('incentive-monthly-shadow')
+  @ApiOperation({
+    summary:
+      '매월 1일 03:00 KST — 전월(YYYY-MM) 인센티브 ScoreRun 자동 생성 (모든 사이트)',
+  })
+  async incentiveMonthlyShadow(@Headers('authorization') auth?: string) {
+    this.assertCronAuth(auth);
+    // 전월(YYYY-MM) 계산 — KST 기준
+    const now = new Date();
+    const kstNow = new Date(now.getTime() + 9 * 60 * 60 * 1000);
+    const target = new Date(Date.UTC(kstNow.getUTCFullYear(), kstNow.getUTCMonth() - 1, 1));
+    const month = `${target.getUTCFullYear()}-${String(target.getUTCMonth() + 1).padStart(2, '0')}`;
+
+    const result = await this.incentivesService.runMonthlyShadowForAllSites(month);
+    this.logger.log(
+      `Monthly shadow cron: month=${month}, runs=${result.totalRuns}, sites=${result.sitesProcessed}`,
+    );
+    return result;
+  }
+
+  @Get('incentive-auto-finalize')
+  @ApiOperation({
+    summary:
+      '매일 04:00 KST — 7일 이상 FROZEN + 미해결 이의 0건인 ScoreRun 자동 FINALIZE',
+  })
+  async incentiveAutoFinalize(@Headers('authorization') auth?: string) {
+    this.assertCronAuth(auth);
+    const result = await this.incentivesService.autoFinalizeStaleFrozenRuns(7);
+    this.logger.log(
+      `Auto-finalize cron: candidates=${result.candidates}, finalized=${result.finalized}, skipped=${result.skipped.length}`,
+    );
+    return result;
   }
 }

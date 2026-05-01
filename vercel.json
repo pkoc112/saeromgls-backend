@@ -13,6 +13,14 @@
     {
       "path": "/api/cron/data-retention-purge",
       "schedule": "0 17 1 * *"
+    },
+    {
+      "path": "/api/cron/incentive-monthly-shadow",
+      "schedule": "0 18 1 * *"
+    },
+    {
+      "path": "/api/cron/incentive-auto-finalize",
+      "schedule": "0 19 * * *"
     }
   ]
 }
