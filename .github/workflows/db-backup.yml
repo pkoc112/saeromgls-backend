@@ -9,15 +9,17 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Install PostgreSQL 17 client (Neon runs PG 17)
-        # Neon DB가 PostgreSQL 17.8이므로 pg_dump도 17 이상 필요 (major version mismatch 방지)
-        # Ubuntu 24.04 default postgresql-client는 16.x → PostgreSQL official APT repo 사용
+        # Neon DB가 PostgreSQL 17.8이므로 pg_dump도 17 이상 필요 (major version mismatch 방지).
+        # Ubuntu 24.04 default postgresql-client는 16.x이고 /usr/bin/pg_dump가 16을 가리킴.
+        # PostgreSQL official APT repo 추가 + postgresql-client-17 설치 후
+        # /usr/lib/postgresql/17/bin을 GITHUB_PATH 앞쪽에 넣어 17이 우선되도록 함.
         run: |
           sudo apt-get install -y postgresql-common
           sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
           sudo apt-get install -y postgresql-client-17
-          # Symlink path 우선순위 보장
-          which pg_dump
-          pg_dump --version
+          echo "/usr/lib/postgresql/17/bin" >> $GITHUB_PATH
+          /usr/lib/postgresql/17/bin/pg_dump --version
+          /usr/lib/postgresql/17/bin/psql --version
 
       - name: Create backup
         env:
