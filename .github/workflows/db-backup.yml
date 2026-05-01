@@ -15,9 +15,12 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
+          # Vercel env pull 시 trailing whitespace/newline이 secret에 섞여 들어가
+          # pg_dump는 통과하나 psql이 sslmode 파싱에서 깨지므로 명시적으로 정리.
+          CLEAN_URL=$(printf %s "$DATABASE_URL" | tr -d '[:space:]')
           TIMESTAMP=$(date +%Y%m%d_%H%M%S)
           FILENAME="backup_${TIMESTAMP}.sql.gz"
-          pg_dump "$DATABASE_URL" | gzip > "$FILENAME"
+          pg_dump "$CLEAN_URL" | gzip > "$FILENAME"
           echo "FILENAME=$FILENAME" >> $GITHUB_ENV
           echo "Backup created: $FILENAME ($(du -h $FILENAME | cut -f1))"
 
@@ -32,8 +35,9 @@ jobs:
         env:
           DATABASE_URL: ${{ secrets.DATABASE_URL }}
         run: |
+          CLEAN_URL=$(printf %s "$DATABASE_URL" | tr -d '[:space:]')
           # 테이블 수 확인
-          TABLE_COUNT=$(psql "$DATABASE_URL" -t -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public'")
+          TABLE_COUNT=$(psql "$CLEAN_URL" -t -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public'" | tr -d '[:space:]')
           echo "Tables in DB: $TABLE_COUNT"
 
           # 백업 파일 크기 확인
@@ -41,6 +45,12 @@ jobs:
           echo "Backup size: $BACKUP_SIZE"
 
           if [ "$TABLE_COUNT" -lt 5 ]; then
-            echo "WARNING: Less than 5 tables found!"
+            echo "ERROR: Less than 5 tables found!"
+            exit 1
+          fi
+          # 백업 크기 sanity (1KB 미만이면 의심)
+          BYTES=$(stat -c%s ${{ env.FILENAME }})
+          if [ "$BYTES" -lt 1024 ]; then
+            echo "ERROR: backup smaller than 1KB ($BYTES bytes) — likely empty"
             exit 1
           fi
