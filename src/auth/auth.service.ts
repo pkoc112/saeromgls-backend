@@ -117,13 +117,15 @@ export class AuthService {
         where: { employeeCode: dto.employeeCode },
       });
 
-      // UserConsent 기록
-      await this.prisma.userConsent.createMany({
-        data: [
-          { workerId: worker!.id, consentType: 'TOS', version: '1.0' },
-          { workerId: worker!.id, consentType: 'PRIVACY', version: '1.0' },
-        ],
-      });
+      // UserConsent 기록 (국외이전 동의도 함께 기록 — 수신 시점에만 추가)
+      const consentRows: { workerId: string; consentType: string; version: string }[] = [
+        { workerId: worker!.id, consentType: 'TOS', version: '1.0' },
+        { workerId: worker!.id, consentType: 'PRIVACY', version: '1.0' },
+      ];
+      if (dto.agreedToOverseas) {
+        consentRows.push({ workerId: worker!.id, consentType: 'OVERSEAS_TRANSFER', version: '1.0' });
+      }
+      await this.prisma.userConsent.createMany({ data: consentRows });
 
       this.logger.log(
         `Employee linked: ${dto.employeeCode} (${target.role})`,
@@ -193,12 +195,14 @@ export class AuthService {
           siteId,
         },
       });
-      await tx.userConsent.createMany({
-        data: [
-          { workerId: w.id, consentType: 'TOS', version: '1.0' },
-          { workerId: w.id, consentType: 'PRIVACY', version: '1.0' },
-        ],
-      });
+      const consentRows: { workerId: string; consentType: string; version: string }[] = [
+        { workerId: w.id, consentType: 'TOS', version: '1.0' },
+        { workerId: w.id, consentType: 'PRIVACY', version: '1.0' },
+      ];
+      if (dto.agreedToOverseas) {
+        consentRows.push({ workerId: w.id, consentType: 'OVERSEAS_TRANSFER', version: '1.0' });
+      }
+      await tx.userConsent.createMany({ data: consentRows });
       return w;
     });
 

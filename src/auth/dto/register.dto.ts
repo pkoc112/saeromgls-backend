@@ -74,4 +74,13 @@ export class RegisterDto {
   })
   @IsBoolean({ message: '개인정보처리방침 동의 여부를 확인해주세요' })
   agreedToPrivacy: boolean;
+
+  @ApiProperty({
+    description: '개인정보 국외이전 동의 여부 (Vercel/Neon US-East 인프라 사용)',
+    example: true,
+    required: false,
+  })
+  @IsBoolean({ message: '국외이전 동의 여부를 확인해주세요' })
+  @IsOptional()
+  agreedToOverseas?: boolean;
 }
