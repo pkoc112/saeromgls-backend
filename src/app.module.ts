@@ -24,6 +24,7 @@ import { MlGovernanceModule } from './ml-governance/ml-governance.module';
 import { CustomerOpsModule } from './customer-ops/customer-ops.module';
 import { HealthModule } from './health/health.module';
 import { CronModule } from './cron/cron.module';
+import { DiagnosticsModule } from './diagnostics/diagnostics.module';
 
 @Module({
   imports: [
@@ -51,6 +52,7 @@ import { CronModule } from './cron/cron.module';
     CustomerOpsModule,
     HealthModule,
     CronModule,
+    DiagnosticsModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })
