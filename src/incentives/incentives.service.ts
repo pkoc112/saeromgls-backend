@@ -12,8 +12,8 @@ import { CreateObjectionDto } from './dto/create-objection.dto';
 import { QueryPolicyDto, QueryScoreRunDto, QueryObjectionDto } from './dto/query-incentives.dto';
 import { Prisma } from '@prisma/client';
 import {
-  safeDiv, clamp, fix2, resolveTrack, getGrade, scaleBands, readPolicyConfig,
-  MIN_WORKERS, MIN_DAYS_WORKED, WORKING_DAYS, VALID_TRACKS, TRACK_MIGRATION, DEFAULT_PAYOUT_BANDS,
+  safeDiv, clamp, fix2, resolveTrack, getGrade, scaleBands, readPolicyConfig, normalizeCategory,
+  MIN_WORKERS, MIN_DAYS_WORKED, WORKING_DAYS, VALID_TRACKS, TRACK_MIGRATION, TRACK_NOMINAL_MAX, DEFAULT_PAYOUT_BANDS,
 } from './incentive-utils';
 
 // ════════════════════════════════════════════════════════════════
@@ -33,7 +33,7 @@ const BASELINES = {
 interface ExplanationPerformance { total: number; [key: string]: unknown; }
 interface ExplanationReliability { total: number; [key: string]: unknown; }
 interface ExplanationTeamwork { total: number; [key: string]: unknown; }
-interface ScoreExplanation { track: string; performance: ExplanationPerformance; reliability: ExplanationReliability; teamwork: ExplanationTeamwork; safetyGate?: { passed: boolean; violations: string[] }; }
+interface ScoreExplanation { track: string; version?: string; nominalMax?: { perf: number; rel: number; team: number }; performance: ExplanationPerformance; reliability: ExplanationReliability; teamwork: ExplanationTeamwork; safetyGate?: { passed: boolean; violations: string[] }; }
 interface WorkerScoreData { workerId: string; performanceScore: number; reliabilityScore: number; teamworkScore: number; totalScore: number; grade: string; estimatedPayout: number; explanationJson: ScoreExplanation; }
 
 interface WorkerStats {
@@ -494,23 +494,30 @@ export class IncentivesService {
     // 물동량: 총 CBM (30점)
     const volScore = fix2(clamp(safeDiv(stats.totalVolume, vpm), 0, 2) * 15); // 0-30
 
-    const performanceScore = fix2(clamp(throughputScore + effScore + volScore, 0, 100));
+    // raw 카테고리 점수 (정규화 전)
+    const perfRaw = throughputScore + effScore + volScore;  // raw max 100
 
-    // ── 신뢰도 (0~100) ──
+    // ── 신뢰도 ── raw max 50 (출근 50 + 패널티)
     const attendScore = fix2(clamp(safeDiv(stats.daysWorked.size, (baselines as any).__workingDays || WORKING_DAYS) * 50, 0, 50));
     const voidRate = safeDiv(stats.voidCount, stats.totalCount);
     const editRate = safeDiv(stats.editCount, stats.totalCount);
     const voidPen = fix2(clamp(voidRate * 250, 0, 25));
     const editPen = fix2(clamp(editRate * 150, 0, 15));
-    const reliabilityScore = fix2(clamp(attendScore - voidPen - editPen, 0, 100));
+    const relRaw = attendScore - voidPen - editPen;  // raw max 50
 
-    // ── 팀워크 (0~100) ──
+    // ── 팀워크 ── raw max 100
     const collabRate = safeDiv(stats.teamworkCount, stats.totalCount);
     const collabScore = fix2(clamp(collabRate * 50, 0, 50));
     const multiRate = safeDiv(stats.multiAssignmentCount, stats.totalCount);
     const multiScore = fix2(clamp(multiRate * 60, 0, 30));
     const helpScore = fix2(clamp(stats.coworkerCount * 0.5, 0, 20));
-    const teamworkScore = fix2(clamp(collabScore + multiScore + helpScore, 0, 100));
+    const teamRaw = collabScore + multiScore + helpScore;  // raw max 100
+
+    // v3.1 — 트랙별 nominal max로 정규화 (Deep Research 권고)
+    const nom = TRACK_NOMINAL_MAX.OUTBOUND;
+    const performanceScore = normalizeCategory(perfRaw, nom.perf);
+    const reliabilityScore = normalizeCategory(relRaw, nom.rel);
+    const teamworkScore = normalizeCategory(teamRaw, nom.team);
 
     const totalScore = fix2(performanceScore * weights.performance / 100 + reliabilityScore * weights.reliability / 100 + teamworkScore * weights.teamwork / 100);
     const { grade, amount } = getGrade(totalScore, payoutBands);
@@ -519,9 +526,11 @@ export class IncentivesService {
       performanceScore, reliabilityScore, teamworkScore, totalScore, grade, estimatedPayout: amount,
       explanationJson: {
         track: 'OUTBOUND',
-        performance: { total: performanceScore, throughput: { perDay: fix2(throughput), baseline: tpd, score: throughputScore }, efficiency: { cbmPerHour: fix2(eff), score: effScore }, volume: { total: fix2(stats.totalVolume), baseline: vpm, score: volScore } },
-        reliability: { total: reliabilityScore, attendance: { days: stats.daysWorked.size, score: attendScore }, voidRate: { value: fix2(voidRate * 100), penalty: -voidPen }, editRate: { value: fix2(editRate * 100), penalty: -editPen } },
-        teamwork: { total: teamworkScore, collaboration: collabScore, multiAssignment: multiScore, crossHelp: helpScore },
+        version: 'v3.1',
+        nominalMax: nom,
+        performance: { total: performanceScore, raw: fix2(perfRaw), throughput: { perDay: fix2(throughput), baseline: tpd, score: throughputScore }, efficiency: { cbmPerHour: fix2(eff), score: effScore }, volume: { total: fix2(stats.totalVolume), baseline: vpm, score: volScore } },
+        reliability: { total: reliabilityScore, raw: fix2(relRaw), attendance: { days: stats.daysWorked.size, score: attendScore }, voidRate: { value: fix2(voidRate * 100), penalty: -voidPen }, editRate: { value: fix2(editRate * 100), penalty: -editPen } },
+        teamwork: { total: teamworkScore, raw: fix2(teamRaw), collaboration: collabScore, multiAssignment: multiScore, crossHelp: helpScore },
       },
     };
   }
@@ -547,20 +556,26 @@ export class IncentivesService {
     // 정확도 (25점)
     const diffRate = safeDiv(stats.inboundDiffQuantity, stats.inboundApprovedQuantity);
     const accScore = fix2(clamp((1 - diffRate) * 25, 0, 25));
-    const performanceScore = fix2(clamp(sessScore + qtyScore + outScore + accScore, 0, 100));
+    const perfRaw = sessScore + qtyScore + outScore + accScore;  // raw max 100
 
-    // ── 신뢰도 ──
+    // ── 신뢰도 ── raw max 50
     const attendScore = fix2(clamp(safeDiv(stats.daysWorked.size, (baselines as any).__workingDays || WORKING_DAYS) * 50, 0, 50));
     const voidRate = safeDiv(stats.voidCount, stats.totalCount);
     const editRate = safeDiv(stats.editCount, stats.totalCount);
     const voidPen = fix2(clamp(voidRate * 200, 0, 25));
     const editPen = fix2(clamp(editRate * 100, 0, 15));
-    const reliabilityScore = fix2(clamp(attendScore - voidPen - editPen, 0, 100));
+    const relRaw = attendScore - voidPen - editPen;  // raw max 50
 
-    // ── 팀워크 ──
+    // ── 팀워크 ── raw max 100
     const sessionTeam = fix2(clamp(stats.teamworkCount * 2, 0, 60));
     const crossWork = fix2(clamp((stats.inboundSessionCount > 0 && stats.totalVolume > 0 ? 40 : 0), 0, 40)); // 양방향 보너스
-    const teamworkScore = fix2(clamp(sessionTeam + crossWork, 0, 100));
+    const teamRaw = sessionTeam + crossWork;  // raw max 100
+
+    // v3.1 정규화
+    const nom = TRACK_NOMINAL_MAX.INBOUND_DOCK;
+    const performanceScore = normalizeCategory(perfRaw, nom.perf);
+    const reliabilityScore = normalizeCategory(relRaw, nom.rel);
+    const teamworkScore = normalizeCategory(teamRaw, nom.team);
 
     const totalScore = fix2(performanceScore * weights.performance / 100 + reliabilityScore * weights.reliability / 100 + teamworkScore * weights.teamwork / 100);
     const { grade, amount } = getGrade(totalScore, payoutBands);
@@ -569,9 +584,11 @@ export class IncentivesService {
       performanceScore, reliabilityScore, teamworkScore, totalScore, grade, estimatedPayout: amount,
       explanationJson: {
         track: 'INBOUND_DOCK',
-        performance: { total: performanceScore, inboundSessions: { value: stats.inboundSessionCount, baseline: sessBase, score: sessScore }, inboundQuantity: { value: stats.inboundApprovedQuantity, baseline: qtyBase, score: qtyScore }, outboundVolume: { cbm: fix2(stats.totalVolume), baseline: outVolBase, score: outScore }, accuracy: { diffRate: fix2(diffRate * 100), score: accScore } },
-        reliability: { total: reliabilityScore, attendance: { days: stats.daysWorked.size, score: attendScore }, voidRate: { value: fix2(voidRate * 100), penalty: -voidPen }, editRate: { value: fix2(editRate * 100), penalty: -editPen } },
-        teamwork: { total: teamworkScore, sessionTeamwork: sessionTeam, bidirectionalBonus: crossWork },
+        version: 'v3.1',
+        nominalMax: nom,
+        performance: { total: performanceScore, raw: fix2(perfRaw), inboundSessions: { value: stats.inboundSessionCount, baseline: sessBase, score: sessScore }, inboundQuantity: { value: stats.inboundApprovedQuantity, baseline: qtyBase, score: qtyScore }, outboundVolume: { cbm: fix2(stats.totalVolume), baseline: outVolBase, score: outScore }, accuracy: { diffRate: fix2(diffRate * 100), score: accScore } },
+        reliability: { total: reliabilityScore, raw: fix2(relRaw), attendance: { days: stats.daysWorked.size, score: attendScore }, voidRate: { value: fix2(voidRate * 100), penalty: -voidPen }, editRate: { value: fix2(editRate * 100), penalty: -editPen } },
+        teamwork: { total: teamworkScore, raw: fix2(teamRaw), sessionTeamwork: sessionTeam, bidirectionalBonus: crossWork },
       },
     };
   }
@@ -589,32 +606,42 @@ export class IncentivesService {
     // ── 성과 ──
     const throughputScore = fix2(clamp(safeDiv(stats.inspectionsConducted, inspBase), 0, 2) * 17.5); // 0-35
     // 불량 탐지율 (목표 근접 = 최고점)
+    // v3.1 (Deep Research 권고): 0.1% 미만 "고무도장 의심" 자동 패널티 제거.
+    // 사유: upstream 품질이 좋은 달 또는 저빈도 탐지 환경에서 진짜 무결점 검수자도
+    // 처벌되는 false-positive 위험. 감사표본 기반 precision/recall 도입 전까지는
+    // 0% ~ targetDef × 2 구간을 정상 범위로 간주.
     const defectRate = safeDiv(stats.inspectionDefects, stats.inspectionQuantity);
     let detectionScore: number;
     if (stats.inspectionQuantity === 0) { detectionScore = 0; }
-    else if (defectRate <= 0.001) { detectionScore = 10; } // 고무도장 의심
     else if (defectRate <= targetDef * 2) {
+      // 0 부터 targetDef*2 까지는 정상 범위 — 0에 가까울수록 만점, targetDef일 때 최고점
       const proximity = 1 - Math.abs(defectRate - targetDef) / (targetDef || 0.03);
       detectionScore = 30 + clamp(proximity * 10, 0, 10);
     } else if (defectRate <= 0.15) {
       const decay = 1 - safeDiv(defectRate - targetDef * 2, 0.15 - targetDef * 2);
       detectionScore = 15 + clamp(decay * 15, 0, 15);
-    } else { detectionScore = 10; }
+    } else { detectionScore = 10; }  // 과탐지 의심만 유지
     detectionScore = fix2(detectionScore);
     const coverageScore = fix2(clamp(safeDiv(stats.inspectionQuantity, covBase), 0, 2) * 12.5); // 0-25
-    const performanceScore = fix2(clamp(throughputScore + detectionScore + coverageScore, 0, 100));
+    const perfRaw = throughputScore + detectionScore + coverageScore;  // raw max 100
 
-    // ── 신뢰도 ──
+    // ── 신뢰도 ── raw max 60 (출근 60 + 패널티)
     const attendScore = fix2(clamp(safeDiv(stats.daysWorked.size, (baselines as any).__workingDays || WORKING_DAYS) * 60, 0, 60));
     const voidRate = safeDiv(stats.voidCount, stats.totalCount);
     const editRate = safeDiv(stats.editCount, stats.totalCount);
     const voidPen = fix2(clamp(voidRate * 200, 0, 20));
     const editPen = fix2(clamp(editRate * 100, 0, 10));
-    const reliabilityScore = fix2(clamp(attendScore - voidPen - editPen, 0, 100));
+    const relRaw = attendScore - voidPen - editPen;  // raw max 60
 
-    // ── 팀워크 ──
+    // ── 팀워크 ── raw max 60 (teamworkCount × 2 cap 60)
     const supportScore = fix2(clamp(stats.teamworkCount * 2, 0, 60));
-    const teamworkScore = fix2(clamp(supportScore, 0, 100));
+    const teamRaw = supportScore;  // raw max 60
+
+    // v3.1 정규화 (INSPECTION은 rel/team raw max가 60이라 정규화 필수)
+    const nom = TRACK_NOMINAL_MAX.INSPECTION;
+    const performanceScore = normalizeCategory(perfRaw, nom.perf);
+    const reliabilityScore = normalizeCategory(relRaw, nom.rel);
+    const teamworkScore = normalizeCategory(teamRaw, nom.team);
 
     const totalScore = fix2(performanceScore * weights.performance / 100 + reliabilityScore * weights.reliability / 100 + teamworkScore * weights.teamwork / 100);
     const { grade, amount } = getGrade(totalScore, payoutBands);
@@ -623,9 +650,11 @@ export class IncentivesService {
       performanceScore, reliabilityScore, teamworkScore, totalScore, grade, estimatedPayout: amount,
       explanationJson: {
         track: 'INSPECTION',
-        performance: { total: performanceScore, throughput: { value: stats.inspectionsConducted, baseline: inspBase, score: throughputScore }, detectionRate: { defectRate: fix2(defectRate * 100), targetRate: fix2(targetDef * 100), score: detectionScore }, coverage: { quantity: stats.inspectionQuantity, baseline: covBase, score: coverageScore } },
-        reliability: { total: reliabilityScore, attendance: { days: stats.daysWorked.size, score: attendScore }, voidRate: { value: fix2(voidRate * 100), penalty: -voidPen }, editRate: { value: fix2(editRate * 100), penalty: -editPen } },
-        teamwork: { total: teamworkScore, supportContribution: stats.teamworkCount },
+        version: 'v3.1',
+        nominalMax: nom,
+        performance: { total: performanceScore, raw: fix2(perfRaw), throughput: { value: stats.inspectionsConducted, baseline: inspBase, score: throughputScore }, detectionRate: { defectRate: fix2(defectRate * 100), targetRate: fix2(targetDef * 100), score: detectionScore }, coverage: { quantity: stats.inspectionQuantity, baseline: covBase, score: coverageScore } },
+        reliability: { total: reliabilityScore, raw: fix2(relRaw), attendance: { days: stats.daysWorked.size, score: attendScore }, voidRate: { value: fix2(voidRate * 100), penalty: -voidPen }, editRate: { value: fix2(editRate * 100), penalty: -editPen } },
+        teamwork: { total: teamworkScore, raw: fix2(teamRaw), supportContribution: stats.teamworkCount },
       },
     };
   }
@@ -642,16 +671,22 @@ export class IncentivesService {
     const teamOutputScore = fix2(clamp(safeDiv(stats.managedWorkerAvgScore, teamBase) * 35, 0, 35));
     const exceptionScore = fix2(clamp(safeDiv(stats.exceptionsHandled, excBase), 0, 2) * 17.5);
     const coverageScore = fix2(clamp(safeDiv(stats.daysWorked.size, (baselines as any).__workingDays || WORKING_DAYS) * 30, 0, 30));
-    const performanceScore = fix2(clamp(teamOutputScore + exceptionScore + coverageScore, 0, 100));
+    const perfRaw = teamOutputScore + exceptionScore + coverageScore;  // raw max 100
 
     const teamVoidRate = safeDiv(stats.teamTotalVoids, stats.teamTotalItems);
     const teamQuality = fix2(clamp((1 - teamVoidRate * 10) * 50, 0, 50));
     const attendScore = fix2(clamp(safeDiv(stats.daysWorked.size, (baselines as any).__workingDays || WORKING_DAYS) * 25, 0, 25));
-    const reliabilityScore = fix2(clamp(teamQuality + attendScore + 25, 0, 100)); // +25 일관성 기본점
+    const relRaw = teamQuality + attendScore + 25;  // raw max 100 (+25 일관성 기본점)
 
     const activityScore = fix2(clamp(stats.exceptionsHandled * 3, 0, 60));
     const crossScore = fix2(clamp(stats.teamworkCount * 4, 0, 40));
-    const teamworkScore = fix2(clamp(activityScore + crossScore, 0, 100));
+    const teamRaw = activityScore + crossScore;  // raw max 100
+
+    // v3.1 정규화
+    const nom = TRACK_NOMINAL_MAX.MANAGER;
+    const performanceScore = normalizeCategory(perfRaw, nom.perf);
+    const reliabilityScore = normalizeCategory(relRaw, nom.rel);
+    const teamworkScore = normalizeCategory(teamRaw, nom.team);
 
     const totalScore = fix2(performanceScore * weights.performance / 100 + reliabilityScore * weights.reliability / 100 + teamworkScore * weights.teamwork / 100);
     const { grade, amount } = getGrade(totalScore, payoutBands);
@@ -660,9 +695,11 @@ export class IncentivesService {
       performanceScore, reliabilityScore, teamworkScore, totalScore, grade, estimatedPayout: amount,
       explanationJson: {
         track: 'MANAGER',
-        performance: { total: performanceScore, teamOutput: { avgScore: fix2(stats.managedWorkerAvgScore), baseline: teamBase, score: teamOutputScore }, exceptions: { count: stats.exceptionsHandled, baseline: excBase, score: exceptionScore }, coverage: { days: stats.daysWorked.size, score: coverageScore } },
-        reliability: { total: reliabilityScore, teamQuality: { voidRate: fix2(teamVoidRate * 100), score: teamQuality }, attendance: { days: stats.daysWorked.size, score: attendScore } },
-        teamwork: { total: teamworkScore, managementActivity: activityScore, crossSupport: crossScore },
+        version: 'v3.1',
+        nominalMax: nom,
+        performance: { total: performanceScore, raw: fix2(perfRaw), teamOutput: { avgScore: fix2(stats.managedWorkerAvgScore), baseline: teamBase, score: teamOutputScore }, exceptions: { count: stats.exceptionsHandled, baseline: excBase, score: exceptionScore }, coverage: { days: stats.daysWorked.size, score: coverageScore } },
+        reliability: { total: reliabilityScore, raw: fix2(relRaw), teamQuality: { voidRate: fix2(teamVoidRate * 100), score: teamQuality }, attendance: { days: stats.daysWorked.size, score: attendScore } },
+        teamwork: { total: teamworkScore, raw: fix2(teamRaw), managementActivity: activityScore, crossSupport: crossScore },
       },
     };
   }

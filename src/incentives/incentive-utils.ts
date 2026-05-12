@@ -3,12 +3,45 @@
  */
 
 export const MIN_WORKERS = 3;
-export const MIN_DAYS_WORKED = 3;
+// 2026-05-12 v3.1 freeze: 3 → 8일로 상향 (Deep Research 권고)
+// 소표본 noise 보호 — 월 3일 근무자는 voidRate/editRate가 1~2건만으로 등급이 흔들림
+export const MIN_DAYS_WORKED = 8;
 export const WORKING_DAYS = 22;
 
 /** 신 4트랙 */
 export const VALID_TRACKS = ['OUTBOUND', 'INBOUND_DOCK', 'INSPECTION', 'MANAGER'] as const;
 export type ActiveTrack = typeof VALID_TRACKS[number];
+
+/**
+ * 트랙별 카테고리 raw 점수의 nominal max.
+ *
+ * 2026-05-12 v3.1 freeze (Deep Research 권고):
+ *   - 각 카테고리 raw 점수를 nominal max로 정규화한 뒤 가중평균해야 트랙간 등급
+ *     일치(예: OUTBOUND 90점 ≡ MANAGER 90점)가 성립.
+ *   - 정규화 이전 raw max는 트랙마다 달랐다 — 예) OUTBOUND/INBOUND_DOCK 신뢰도
+ *     raw max = 50 (출근 50점만, void/edit는 패널티), INSPECTION 팀워크 raw max
+ *     = 60 (teamworkCount × 2). 그대로 가중평균하면 같은 100점이 트랙별로 다른 의미.
+ *   - 모든 score function은 normalizeCategory(raw, MAX) 적용 후 가중평균.
+ */
+export const TRACK_NOMINAL_MAX: Record<
+  ActiveTrack,
+  { perf: number; rel: number; team: number }
+> = {
+  OUTBOUND:     { perf: 100, rel: 50,  team: 100 },
+  INBOUND_DOCK: { perf: 100, rel: 50,  team: 100 },
+  INSPECTION:   { perf: 100, rel: 60,  team: 60  },
+  MANAGER:      { perf: 100, rel: 100, team: 100 },
+};
+
+/**
+ * 카테고리 raw 점수를 0~100 정규화.
+ * raw가 max를 넘으면 clamp, max가 0/음수면 0.
+ */
+export function normalizeCategory(raw: number, max: number): number {
+  if (max <= 0) return 0;
+  const c = Math.max(0, Math.min(max, raw));
+  return fix2((c / max) * 100);
+}
 
 /** 구 5트랙 → 신 4트랙 매핑 */
 export const TRACK_MIGRATION: Record<string, string> = {
