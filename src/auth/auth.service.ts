@@ -885,7 +885,10 @@ export class AuthService {
   }
 
   private getRefreshTokenTtl(): string {
-    return process.env.JWT_REFRESH_EXPIRES_IN || '7d';
+    // 2026-05-14 (Codex P2): 7d → 30d.
+    // 기존 rotation 로직(refresh 사용 시마다 새 토큰 발급)이 이미 구현되어 있어
+    // 활성 사용자는 사실상 영구 로그인 효과. 7일은 키오스크 장시간 운영에 부족.
+    return process.env.JWT_REFRESH_EXPIRES_IN || '30d';
   }
 
   private getRefreshTokenExpiryMs(): number {
