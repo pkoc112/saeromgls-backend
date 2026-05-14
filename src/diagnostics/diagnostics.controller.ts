@@ -43,6 +43,21 @@ export class DiagnosticsController {
     // 204 No Content — 진단 실패가 사용자 흐름을 방해하면 안 됨
   }
 
+  // ── 익명 진단 endpoint ─────────────────────────────────────────────
+  // 2026-05-14 (Codex 협업): refresh token 만료로 모든 인증 fetch가 실패하는
+  // 케이스에서 진단 자체가 캐치 안 되는 blind spot 해소.
+  // 인증 없이도 device 식별자만으로 진단을 받아 root cause 추적 가능.
+  // 폭주 방어를 위해 IP당 분당 30회 더 엄격한 throttle.
+  @Post('mobile/diagnostics-anonymous')
+  @ApiTags('Mobile Diagnostics')
+  @ApiOperation({ summary: '익명 모바일 진단 로그 (auth 만료 케이스 추적용)' })
+  @HttpCode(HttpStatus.NO_CONTENT)
+  @Throttle({ default: { limit: 30, ttl: 60_000 } })
+  async createMobileAnonymous(@Body() dto: CreateMobileDiagnosticDto) {
+    // workerId, siteId 없이 기록 — context 안에 device 식별자가 들어있다면 그것만으로 추적
+    await this.diagnosticsService.createMobileDiagnostic(dto);
+  }
+
   // ── 운영자가 조회: 최근 진단 로그 ───────────────────────────────────
   @Get('admin/diagnostics/mobile')
   @UseGuards(JwtAuthGuard, RolesGuard)

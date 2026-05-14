@@ -28,7 +28,7 @@ async function main() {
   console.log(`  상태: ${sub.status}`);
   console.log(`  생성: ${sub.createdAt.toISOString().split('T')[0]}`);
   console.log(`  trialEndsAt: ${sub.trialEndsAt?.toISOString().split('T')[0] ?? '-'}`);
-  console.log(`  endedAt: ${sub.endedAt?.toISOString().split('T')[0] ?? '-'}`);
+  console.log(`  currentPeriodEnd: ${sub.currentPeriodEnd?.toISOString().split('T')[0] ?? '-'}`);
   console.log(`  features: ${JSON.stringify(sub.plan?.features ?? [])}`);
 
   // EntitlementGuard 차단 사유 시뮬레이션
