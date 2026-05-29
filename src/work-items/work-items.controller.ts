@@ -83,10 +83,12 @@ export class WorkItemsController {
     @Query('workerId') workerId?: string,
     @Query('status') status?: string,
     @Query('siteId') querySiteId?: string,
+    @Query('from') from?: string, // ISO date string (YYYY-MM-DD or full ISO)
+    @Query('to') to?: string,     // ISO date string (YYYY-MM-DD or full ISO)
   ) {
     // ★ siteId 격리: MASTER만 임의 siteId 조회, 그 외엔 JWT siteId 강제
     const siteId = user.role === 'MASTER' ? querySiteId : user.siteId;
-    return this.workItemsService.findActiveForMobile(workerId, status, siteId);
+    return this.workItemsService.findActiveForMobile(workerId, status, siteId, from, to);
   }
 
   @Post('mobile/work-items/:id/end')
