@@ -54,6 +54,7 @@ model Site {
   onboardingRuns     OnboardingRun[]
   supportCases       SupportCase[]
   usageSnapshots     UsageSnapshot[]
+  invoices           Invoice[]
 
   @@index([parentSiteId])
   @@map("sites")
@@ -282,8 +283,9 @@ model Subscription {
   createdAt          DateTime @default(now()) @map("created_at")
   updatedAt          DateTime @updatedAt @map("updated_at")
 
-  site Site @relation(fields: [siteId], references: [id])
-  plan Plan @relation(fields: [planId], references: [id])
+  site     Site      @relation(fields: [siteId], references: [id])
+  plan     Plan      @relation(fields: [planId], references: [id])
+  invoices Invoice[]
 
   @@index([siteId])
   @@index([status])
@@ -911,4 +913,34 @@ model HeatCheckAlert {
   @@index([workerId, createdAt(sort: Desc)])
   @@index([createdAt(sort: Desc)])
   @@map("heat_check_alerts")
+}
+
+/// 인보이스 (수동 청구) — 2026-05-29 재이식
+/// - 매월 자동 청구서 생성 (cron 통합은 별도 — 5/28 사고 회피 위해 모듈만 먼저)
+/// - 상태: DRAFT → ISSUED → PAID / OVERDUE / CANCELLED
+model Invoice {
+  id              String    @id @default(uuid())
+  siteId          String    @map("site_id")
+  subscriptionId  String    @map("subscription_id")
+  invoiceNumber   String    @unique @map("invoice_number")
+  status          String    @default("DRAFT")
+  amount          Int
+  taxAmount       Int       @default(0) @map("tax_amount")
+  totalAmount     Int       @map("total_amount")
+  periodStart     DateTime  @map("period_start")
+  periodEnd       DateTime  @map("period_end")
+  dueDate         DateTime  @map("due_date")
+  issuedAt        DateTime? @map("issued_at")
+  paidAt          DateTime? @map("paid_at")
+  paymentMethod   String?   @map("payment_method")
+  paymentNote     String?   @map("payment_note")
+  createdAt       DateTime  @default(now()) @map("created_at")
+  updatedAt       DateTime  @updatedAt @map("updated_at")
+
+  site         Site         @relation(fields: [siteId], references: [id])
+  subscription Subscription @relation(fields: [subscriptionId], references: [id])
+
+  @@index([siteId, createdAt(sort: Desc)])
+  @@index([status, dueDate])
+  @@map("invoices")
 }
