@@ -889,3 +889,26 @@ model MobileDiagnostic {
   @@index([createdAt(sort: Desc)])
   @@map("mobile_diagnostics")
 }
+
+/// 폭염 자가체크 알림 (오전/오후 각 1회)
+/// - 작업자가 증상 1개+ 체크 시 알림 발송 (Sentry + Gmail + DB)
+/// - 2026-05-28: 부팅 실패 사고로 한 번 제거 후 재이식
+model HeatCheckAlert {
+  id          String   @id @default(uuid())
+  workerId    String   @map("worker_id")
+  workerName  String   @map("worker_name")
+  siteId      String?  @map("site_id")
+  result      String   // 'symptoms' | 'rest'
+  symptoms    String[] // ['dizziness', 'headache', 'nausea']
+  wbgt        Decimal  @db.Decimal(4, 1)
+  temp        Decimal  @db.Decimal(4, 1)
+  humidity    Int
+  slot        String   // 'AM' | 'PM'
+  reportedAt  DateTime @map("reported_at")
+  createdAt   DateTime @default(now()) @map("created_at")
+
+  @@index([siteId, createdAt(sort: Desc)])
+  @@index([workerId, createdAt(sort: Desc)])
+  @@index([createdAt(sort: Desc)])
+  @@map("heat_check_alerts")
+}

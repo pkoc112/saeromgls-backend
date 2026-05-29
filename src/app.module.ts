@@ -25,6 +25,7 @@ import { CustomerOpsModule } from './customer-ops/customer-ops.module';
 import { HealthModule } from './health/health.module';
 import { CronModule } from './cron/cron.module';
 import { DiagnosticsModule } from './diagnostics/diagnostics.module';
+import { HeatAlertsModule } from './heat-alerts/heat-alerts.module';
 
 @Module({
   imports: [
@@ -53,6 +54,7 @@ import { DiagnosticsModule } from './diagnostics/diagnostics.module';
     HealthModule,
     CronModule,
     DiagnosticsModule,
+    HeatAlertsModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })
