@@ -83,11 +83,13 @@ export class WorkItemsController {
     @Query('workerId') workerId?: string,
     @Query('status') status?: string,
     @Query('siteId') querySiteId?: string,
-    @Query('from') from?: string, // ISO date string (YYYY-MM-DD or full ISO)
-    @Query('to') to?: string,     // ISO date string (YYYY-MM-DD or full ISO)
+    @Query('from') from?: string, // YYYY-MM-DD (KST 자정) 또는 full ISO
+    @Query('to') to?: string,     // YYYY-MM-DD (KST 말일) 또는 full ISO
   ) {
-    // ★ siteId 격리: MASTER만 임의 siteId 조회, 그 외엔 JWT siteId 강제
-    const siteId = user.role === 'MASTER' ? querySiteId : user.siteId;
+    // ★ siteId 격리: resolveSiteId 사용 (다른 admin endpoint와 일관성)
+    //   - MASTER: querySiteId 또는 본인 siteId
+    //   - 비-MASTER: 본인 JWT siteId 강제
+    const siteId = resolveSiteId(user, querySiteId);
     return this.workItemsService.findActiveForMobile(workerId, status, siteId, from, to);
   }
 

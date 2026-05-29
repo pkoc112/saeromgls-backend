@@ -168,10 +168,35 @@ export class WorkItemsService {
     }
 
     // 날짜 범위 필터 (from/to 둘 다 옵션)
-    if (from || to) {
+    // - YYYY-MM-DD 형식: KST 자정(from) / KST 23:59:59(to)으로 보정
+    // - ISO 8601: 그대로 사용
+    // - 잘못된 형식: BadRequestException
+    const parseBound = (value: string | undefined, kind: 'from' | 'to'): Date | undefined => {
+      if (!value) return undefined;
+      let date: Date;
+      if (/^\d{4}-\d{2}-\d{2}$/.test(value)) {
+        // KST 기준 자정/말일로 변환 (UTC offset +09:00)
+        date = kind === 'from'
+          ? new Date(`${value}T00:00:00+09:00`)
+          : new Date(`${value}T23:59:59.999+09:00`);
+      } else {
+        date = new Date(value);
+      }
+      if (Number.isNaN(date.getTime())) {
+        throw new BadRequestException(`${kind} 날짜 형식이 올바르지 않습니다 (YYYY-MM-DD 또는 ISO 8601)`);
+      }
+      return date;
+    };
+
+    const fromDate = parseBound(from, 'from');
+    const toDate = parseBound(to, 'to');
+    if (fromDate && toDate && fromDate > toDate) {
+      throw new BadRequestException('from은 to보다 늦을 수 없습니다');
+    }
+    if (fromDate || toDate) {
       where.startedAt = {};
-      if (from) (where.startedAt as Prisma.DateTimeFilter).gte = new Date(from);
-      if (to) (where.startedAt as Prisma.DateTimeFilter).lte = new Date(to);
+      if (fromDate) (where.startedAt as Prisma.DateTimeFilter).gte = fromDate;
+      if (toDate) (where.startedAt as Prisma.DateTimeFilter).lte = toDate;
     }
 
     const data = await this.prisma.workItem.findMany({
