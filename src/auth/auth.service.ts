@@ -324,12 +324,43 @@ export class AuthService {
       }
 
       if (storedToken.revokedAt) {
-        // 이미 사용된 토큰 재사용 시도 → 해당 패밀리 전체 무효화 (탈취 의심)
+        // 2026-06-04: graceful rotation — 동시 요청(race) 구분.
+        // 모바일이 여러 화면에서 동시에 401 → 거의 동시에 같은 refresh token으로
+        // refresh 시도. single-flight가 있어도 화면 포커스/마운트 타이밍에 따라
+        // 짧은 간격으로 2번 올 수 있음. revoke된 지 GRACE_MS 이내면 정상적인
+        // 동시 요청으로 보고 family 무효화(강제 로그아웃) 대신 새 토큰을 발급한다.
+        // 진짜 탈취(오래 전 revoke된 토큰 재사용)만 family 무효화.
+        const GRACE_MS = 90 * 1000; // 90초
+        const revokedAgo = Date.now() - storedToken.revokedAt.getTime();
+        if (revokedAgo <= GRACE_MS) {
+          // 동시 요청 — family의 가장 최근 유효 토큰 발급 흐름으로 진행.
+          // (아래 일반 흐름과 동일하게 새 토큰 생성. 이 토큰은 이미 revoke됐으므로
+          //  추가 revoke 없이 바로 새 토큰만 발급)
+          const worker = await this.prisma.worker.findUnique({
+            where: { id: payload.sub },
+            select: { id: true, role: true, employeeCode: true, status: true, siteId: true },
+          });
+          if (!worker || worker.status !== 'ACTIVE') {
+            throw new UnauthorizedException('유효하지 않은 토큰입니다');
+          }
+          const token = await this.generateToken(
+            worker.id, worker.role, worker.employeeCode,
+            worker.siteId ?? undefined, storedToken.family,
+          );
+          this.logger.log(`Graceful rotation (동시 요청, ${Math.round(revokedAgo / 1000)}s ago) — family ${storedToken.family.slice(0, 8)}`);
+          return {
+            access_token: token.accessToken,
+            refresh_token: token.refreshToken,
+            accessToken: token.accessToken,
+            refreshToken: token.refreshToken,
+          };
+        }
+        // GRACE 초과 = 진짜 재사용 의심 → 패밀리 전체 무효화 (탈취 방어)
         await this.prisma.refreshToken.updateMany({
           where: { family: storedToken.family, revokedAt: null },
           data: { revokedAt: new Date() },
         });
-        this.logger.warn(`Refresh token replay detected! Family ${storedToken.family} revoked.`);
+        this.logger.warn(`Refresh token replay detected! Family ${storedToken.family} revoked. (revoked ${Math.round(revokedAgo / 1000)}s ago)`);
         throw new UnauthorizedException('보안 위협이 감지되었습니다. 다시 로그인해주세요.');
       }
 
