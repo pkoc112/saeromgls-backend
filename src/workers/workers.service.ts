@@ -282,13 +282,28 @@ export class WorkersService {
       );
     }
 
+    // 2026-06 (A-Z 리뷰 P1-1): 정산(PayoutEntry)은 onDelete: Restrict라
+    // 존재 시 worker.delete()가 무조건 500(FK 위반). 명확한 안내로 사전 차단.
+    const payoutCount = await this.prisma.payoutEntry.count({ where: { workerId: id } });
+    if (payoutCount > 0) {
+      throw new ConflictException(
+        `정산 기록이 ${payoutCount}건 있어 삭제할 수 없습니다. 비활성화를 사용하세요.`,
+      );
+    }
+
     // 연관 레코드 먼저 삭제 (외래키 제약)
+    // ScoreEntry/ObjectionCase/InboundParticipant/DockParticipant는 cascade가
+    // 없어 수동 삭제하지 않으면 고아 레코드 발생 (A-Z 리뷰 P1-1).
     await this.prisma.$transaction([
       this.prisma.userConsent.deleteMany({ where: { workerId: id } }),
       this.prisma.loginHistory.deleteMany({ where: { workerId: id } }),
       this.prisma.refreshToken.deleteMany({ where: { workerId: id } }),
       this.prisma.adminActivityLog.deleteMany({ where: { actorWorkerId: id } }),
       this.prisma.auditLog.deleteMany({ where: { actorWorkerId: id } }),
+      this.prisma.scoreEntry.deleteMany({ where: { workerId: id } }),
+      this.prisma.objectionCase.deleteMany({ where: { workerId: id } }),
+      this.prisma.inboundParticipant.deleteMany({ where: { workerId: id } }),
+      this.prisma.dockParticipant.deleteMany({ where: { workerId: id } }),
       this.prisma.worker.delete({ where: { id } }),
     ]);
     this.logger.log(`Worker deleted: ${existing.employeeCode}`);
