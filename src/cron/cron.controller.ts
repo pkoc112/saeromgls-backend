@@ -1,5 +1,6 @@
 import { Controller, Get, Headers, Logger, UnauthorizedException } from '@nestjs/common';
 import { ApiOperation, ApiTags } from '@nestjs/swagger';
+import * as Sentry from '@sentry/node';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { IncentivesService } from '../incentives/incentives.service';
@@ -28,7 +29,10 @@ export class CronController {
 
   private assertCronAuth(authHeader?: string): void {
     const secret = process.env.CRON_SECRET;
-    if (process.env.NODE_ENV === 'production') {
+    // 2026-06 (A-Z 리뷰 P2-9): NODE_ENV뿐 아니라 VERCEL_ENV='production'도 체크
+    const isProd =
+      process.env.NODE_ENV === 'production' || process.env.VERCEL_ENV === 'production';
+    if (isProd) {
       if (!secret) {
         this.logger.error('CRON_SECRET not configured in production');
         throw new UnauthorizedException('Cron secret not configured');
@@ -39,22 +43,78 @@ export class CronController {
     }
   }
 
+  /**
+   * 2026-06 (A-Z 리뷰 P1-3): cron 핸들러 공통 실행 래퍼.
+   * - 멱등 작업은 실패 시 재시도 (max 3회, 지수 백오프)
+   * - 최종 실패 시 Sentry 알림 + AdminActivityLog 기록 (silent 실패 방지)
+   * Vercel Cron은 HTTP 500을 받아도 자동 재시도 안 함 → 앱 레벨에서 처리.
+   */
+  private async runCronJob<T>(
+    jobName: string,
+    fn: () => Promise<T>,
+    opts: { idempotent?: boolean; maxRetries?: number } = {},
+  ): Promise<T> {
+    const { idempotent = false, maxRetries = idempotent ? 3 : 1 } = opts;
+    let lastErr: unknown;
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+      try {
+        const result = await fn();
+        if (attempt > 1) {
+          this.logger.log(`Cron ${jobName} succeeded on attempt ${attempt}`);
+        }
+        return result;
+      } catch (err) {
+        lastErr = err;
+        this.logger.warn(`Cron ${jobName} attempt ${attempt}/${maxRetries} failed: ${err}`);
+        if (attempt < maxRetries) {
+          // 지수 백오프 (10s, 20s, ...)
+          await new Promise((r) => setTimeout(r, 10000 * attempt));
+        }
+      }
+    }
+    // 최종 실패 — Sentry + 감사 로그
+    try {
+      Sentry.captureException(lastErr, {
+        level: 'error',
+        tags: { cron_job: jobName },
+      });
+    } catch { /* Sentry 미설정이어도 흐름 유지 */ }
+    try {
+      await this.prisma.adminActivityLog.create({
+        data: {
+          actorWorkerId: 'SYSTEM',
+          actionType: 'CRON_FAILED',
+          targetType: 'CRON',
+          targetId: jobName,
+          metadata: JSON.stringify({
+            error: lastErr instanceof Error ? lastErr.message : String(lastErr),
+            at: new Date().toISOString(),
+          }),
+        },
+      });
+    } catch { /* 감사 로그 실패도 무시 */ }
+    this.logger.error(`Cron ${jobName} FINAL FAILURE after ${maxRetries} attempts: ${lastErr}`);
+    throw lastErr;
+  }
+
   @Get('subscription-check')
   @ApiOperation({
     summary: '구독 자동 전이 체크 (Trial 만료, Past_Due → Suspended)',
   })
   async subscriptionCheck(@Headers('authorization') auth?: string) {
     this.assertCronAuth(auth);
-    const trialResult = await this.subscriptionsService.checkTrialExpirations();
-    const pastDueResult = await this.subscriptionsService.checkPastDueSuspensions();
-    this.logger.log(
-      `Subscription cron: trial=${trialResult.processed}, suspended=${pastDueResult.processed}`,
-    );
-    return {
-      timestamp: new Date().toISOString(),
-      trialExpired: trialResult,
-      pastDueSuspended: pastDueResult,
-    };
+    return this.runCronJob('subscription-check', async () => {
+      const trialResult = await this.subscriptionsService.checkTrialExpirations();
+      const pastDueResult = await this.subscriptionsService.checkPastDueSuspensions();
+      this.logger.log(
+        `Subscription cron: trial=${trialResult.processed}, suspended=${pastDueResult.processed}`,
+      );
+      return {
+        timestamp: new Date().toISOString(),
+        trialExpired: trialResult,
+        pastDueSuspended: pastDueResult,
+      };
+    }, { idempotent: true });
   }
 
   @Get('data-retention-purge')
@@ -72,6 +132,9 @@ export class CronController {
       loginHistoryDeleted: 0,
       refreshTokensDeleted: 0,
       piiFinalizedCount: 0,
+      heatCheckAlertsDeleted: 0,
+      mobileDiagnosticsDeleted: 0,
+      verificationCodesDeleted: 0,
     };
 
     try {
@@ -108,11 +171,38 @@ export class CronController {
       });
       purgeStats.loginHistoryDeleted = loginResult.count;
 
-      // 만료된 refresh token
+      // 만료된 refresh token + revoke된 지 7일 지난 토큰 (A-Z 리뷰 P2-6: 906건 누적 발견)
+      const sevenDaysAgo = new Date(now);
+      sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
       const refreshResult = await this.prisma.refreshToken.deleteMany({
-        where: { expiresAt: { lt: now } },
+        where: {
+          OR: [
+            { expiresAt: { lt: now } },
+            { revokedAt: { lt: sevenDaysAgo } },
+          ],
+        },
       });
       purgeStats.refreshTokensDeleted = refreshResult.count;
+
+      // 폭염 자가체크 알림 3년 (산업안전보건법) — A-Z 리뷰 P2-5
+      const heatResult = await this.prisma.heatCheckAlert.deleteMany({
+        where: { createdAt: { lt: threeYearsAgo } },
+      });
+      purgeStats.heatCheckAlertsDeleted = heatResult.count;
+
+      // 모바일 진단 로그 90일 (단기 디버깅용) — A-Z 리뷰 P2-5
+      const ninetyDaysAgoForDiag = new Date(now);
+      ninetyDaysAgoForDiag.setDate(ninetyDaysAgoForDiag.getDate() - 90);
+      const diagResult = await this.prisma.mobileDiagnostic.deleteMany({
+        where: { createdAt: { lt: ninetyDaysAgoForDiag } },
+      });
+      purgeStats.mobileDiagnosticsDeleted = diagResult.count;
+
+      // 만료된 이메일 인증코드 (10분 TTL이지만 미사용분 누적 가능) — A-Z 리뷰 P2-5
+      const vcResult = await this.prisma.verificationCode.deleteMany({
+        where: { expiresAt: { lt: now } },
+      });
+      purgeStats.verificationCodesDeleted = vcResult.count;
 
       // 90일 경과 INACTIVE 계정 PII 최종 삭제
       const ninetyDaysAgo = new Date(now);
@@ -163,17 +253,19 @@ export class CronController {
   })
   async incentiveMonthlyShadow(@Headers('authorization') auth?: string) {
     this.assertCronAuth(auth);
-    // 전월(YYYY-MM) 계산 — KST 기준
-    const now = new Date();
-    const kstNow = new Date(now.getTime() + 9 * 60 * 60 * 1000);
-    const target = new Date(Date.UTC(kstNow.getUTCFullYear(), kstNow.getUTCMonth() - 1, 1));
-    const month = `${target.getUTCFullYear()}-${String(target.getUTCMonth() + 1).padStart(2, '0')}`;
+    return this.runCronJob('incentive-monthly-shadow', async () => {
+      // 전월(YYYY-MM) 계산 — KST 기준
+      const now = new Date();
+      const kstNow = new Date(now.getTime() + 9 * 60 * 60 * 1000);
+      const target = new Date(Date.UTC(kstNow.getUTCFullYear(), kstNow.getUTCMonth() - 1, 1));
+      const month = `${target.getUTCFullYear()}-${String(target.getUTCMonth() + 1).padStart(2, '0')}`;
 
-    const result = await this.incentivesService.runMonthlyShadowForAllSites(month);
-    this.logger.log(
-      `Monthly shadow cron: month=${month}, runs=${result.totalRuns}, sites=${result.sitesProcessed}`,
-    );
-    return result;
+      const result = await this.incentivesService.runMonthlyShadowForAllSites(month);
+      this.logger.log(
+        `Monthly shadow cron: month=${month}, runs=${result.totalRuns}, sites=${result.sitesProcessed}`,
+      );
+      return result;
+    }, { idempotent: true });
   }
 
   @Get('incentive-auto-finalize')
@@ -183,10 +275,12 @@ export class CronController {
   })
   async incentiveAutoFinalize(@Headers('authorization') auth?: string) {
     this.assertCronAuth(auth);
-    const result = await this.incentivesService.autoFinalizeStaleFrozenRuns(7);
-    this.logger.log(
-      `Auto-finalize cron: candidates=${result.candidates}, finalized=${result.finalized}, skipped=${result.skipped.length}`,
-    );
-    return result;
+    return this.runCronJob('incentive-auto-finalize', async () => {
+      const result = await this.incentivesService.autoFinalizeStaleFrozenRuns(7);
+      this.logger.log(
+        `Auto-finalize cron: candidates=${result.candidates}, finalized=${result.finalized}, skipped=${result.skipped.length}`,
+      );
+      return result;
+    }, { idempotent: true });
   }
 }
