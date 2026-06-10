@@ -915,6 +915,27 @@ model HeatCheckAlert {
   @@map("heat_check_alerts")
 }
 
+/// 시간별 체감온도(WBGT) 기록 — 온열질환 관리 추이용
+/// - 모바일 앱이 날씨 갱신(30분 주기) 시 시간당 1회 보고 (앱 표시값과 동일한 WBGT)
+/// - (siteId, recordedAt) 시간 단위 upsert — 중복 보고는 갱신 처리
+/// - 야간(앱 미가동) 시간대는 기록 없음이 정상 (작업 없는 시간)
+/// - 보관: 3년 (HeatCheckAlert와 동일, data-retention-purge cron)
+model HeatHourlyRecord {
+  id         String   @id @default(uuid())
+  siteId     String?  @map("site_id")
+  wbgt       Decimal  @db.Decimal(4, 1)
+  temp       Decimal  @db.Decimal(4, 1)
+  humidity   Int
+  level      String   // 'normal' | 'attention' | 'caution' | 'warning' | 'danger' (KOSHA 5단계)
+  recordedAt DateTime @map("recorded_at") // 정시(hour) 단위로 절삭된 시각
+  createdAt  DateTime @default(now()) @map("created_at")
+
+  @@unique([siteId, recordedAt])
+  @@index([siteId, recordedAt(sort: Desc)])
+  @@index([recordedAt(sort: Desc)])
+  @@map("heat_hourly_records")
+}
+
 /// 인보이스 (수동 청구) — 2026-05-29 재이식
 /// - 매월 자동 청구서 생성 (cron 통합은 별도 — 5/28 사고 회피 위해 모듈만 먼저)
 /// - 상태: DRAFT → ISSUED → PAID / OVERDUE / CANCELLED

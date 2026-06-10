@@ -3,6 +3,7 @@ import { Resend } from 'resend';
 import * as Sentry from '@sentry/node';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateHeatAlertDto } from './dto/create-heat-alert.dto';
+import { CreateHeatRecordDto } from './dto/create-heat-record.dto';
 
 /**
  * 폭염 자가체크 알림 처리
@@ -166,6 +167,73 @@ export class HeatAlertsService {
     }
 
     return { success: true, id: saved.id };
+  }
+
+  /**
+   * 시간별 체감온도(WBGT) 기록 — 시간 단위 upsert
+   * - 모바일이 30분 주기 날씨 갱신 시 보고 → 서버에서 정시(hour) 절삭 후 dedup
+   * - 같은 시간대 재보고는 최신 값으로 갱신 (마지막 관측 우선)
+   */
+  async recordHourly(siteId: string | null, dto: CreateHeatRecordDto) {
+    const recordedAt = new Date();
+    recordedAt.setMinutes(0, 0, 0); // 정시 절삭
+
+    const data = {
+      wbgt: dto.wbgt,
+      temp: dto.temp,
+      humidity: dto.humidity,
+      level: dto.level,
+    };
+
+    // siteId가 null일 수 있어 unique upsert 대신 findFirst → update/create
+    // (Postgres unique는 NULL을 distinct 취급 → null 사이트는 수동 dedup)
+    const existing = await this.prisma.heatHourlyRecord.findFirst({
+      where: { siteId, recordedAt },
+      select: { id: true },
+    });
+    if (existing) {
+      await this.prisma.heatHourlyRecord.update({
+        where: { id: existing.id },
+        data,
+      });
+      return { success: true, id: existing.id, updated: true };
+    }
+    try {
+      const saved = await this.prisma.heatHourlyRecord.create({
+        data: { siteId, recordedAt, ...data },
+      });
+      return { success: true, id: saved.id, updated: false };
+    } catch (err: unknown) {
+      // 동시 보고 race로 unique 충돌(P2002) 시 — 이미 기록됨, 성공 처리
+      if ((err as { code?: string })?.code === 'P2002') {
+        return { success: true, updated: true };
+      }
+      throw err;
+    }
+  }
+
+  /**
+   * 시간별 체감온도 기록 조회 (관리자 웹 — KST 하루 단위)
+   * @param dateStr 'YYYY-MM-DD' (KST). 미지정 시 KST 오늘.
+   */
+  async findHourlyRecords(siteId: string | null | undefined, dateStr?: string) {
+    const kstNow = new Date(Date.now() + 9 * 3600_000);
+    const ymd =
+      dateStr && /^\d{4}-\d{2}-\d{2}$/.test(dateStr)
+        ? dateStr
+        : kstNow.toISOString().slice(0, 10);
+    const start = new Date(`${ymd}T00:00:00+09:00`);
+    const end = new Date(start.getTime() + 24 * 3600_000);
+
+    const records = await this.prisma.heatHourlyRecord.findMany({
+      where: {
+        // siteId NULL 호환 (기존 데이터 보호 패턴 — 함정 #11)
+        ...(siteId ? { OR: [{ siteId }, { siteId: null }] } : {}),
+        recordedAt: { gte: start, lt: end },
+      },
+      orderBy: { recordedAt: 'asc' },
+    });
+    return { date: ymd, records };
   }
 
   /**

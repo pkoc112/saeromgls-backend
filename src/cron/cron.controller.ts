@@ -133,6 +133,7 @@ export class CronController {
       refreshTokensDeleted: 0,
       piiFinalizedCount: 0,
       heatCheckAlertsDeleted: 0,
+      heatHourlyRecordsDeleted: 0,
       mobileDiagnosticsDeleted: 0,
       verificationCodesDeleted: 0,
     };
@@ -189,6 +190,12 @@ export class CronController {
         where: { createdAt: { lt: threeYearsAgo } },
       });
       purgeStats.heatCheckAlertsDeleted = heatResult.count;
+
+      // 시간별 체감온도 기록 3년 (HeatCheckAlert와 동일 보관 기준)
+      const heatHourlyResult = await this.prisma.heatHourlyRecord.deleteMany({
+        where: { createdAt: { lt: threeYearsAgo } },
+      });
+      purgeStats.heatHourlyRecordsDeleted = heatHourlyResult.count;
 
       // 모바일 진단 로그 90일 (단기 디버깅용) — A-Z 리뷰 P2-5
       const ninetyDaysAgoForDiag = new Date(now);
