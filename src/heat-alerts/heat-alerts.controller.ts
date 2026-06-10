@@ -85,6 +85,26 @@ export class HeatAlertsController {
   }
 
   /**
+   * 관리자: 월별 체감온도 요약 (일별 최고/평균 + 단계별 일수)
+   */
+  @Get('admin/heat-records/monthly')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @ApiBearerAuth('jwt')
+  @Roles('ADMIN', 'SUPERVISOR')
+  @ApiOperation({
+    summary: '월별 체감온도 요약',
+    description: 'month(YYYY-MM, KST) 한 달의 일별 최고/평균 WBGT + 단계별 일수. 미지정 시 이번 달.',
+  })
+  findMonthlyStats(
+    @CurrentUser() user: JwtPayload,
+    @Query('siteId') querySiteId?: string,
+    @Query('month') month?: string,
+  ) {
+    const siteId = resolveSiteId(user, querySiteId);
+    return this.heatAlertsService.findMonthlyStats(siteId, month);
+  }
+
+  /**
    * 관리자: 알림 목록 조회
    */
   @Get('admin/heat-alerts')

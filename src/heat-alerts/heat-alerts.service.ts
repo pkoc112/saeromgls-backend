@@ -237,6 +237,93 @@ export class HeatAlertsService {
   }
 
   /**
+   * 월별 체감온도 요약 (관리자 웹 — KST 월 단위)
+   * - 일별: 최고/평균 WBGT, 최고 단계, 기록 시간수
+   * - 요약: 기록일수, 주의+/경고+/위험 일수, 월 최고 WBGT(+날짜)
+   * @param monthStr 'YYYY-MM' (KST). 미지정 시 KST 이번 달.
+   */
+  async findMonthlyStats(siteId: string | null | undefined, monthStr?: string) {
+    const kstNow = new Date(Date.now() + 9 * 3600_000);
+    const ym =
+      monthStr && /^\d{4}-\d{2}$/.test(monthStr)
+        ? monthStr
+        : kstNow.toISOString().slice(0, 7);
+    const [y, m] = ym.split('-').map(Number);
+    const start = new Date(`${ym}-01T00:00:00+09:00`);
+    const nextYm = m === 12 ? `${y + 1}-01` : `${y}-${String(m + 1).padStart(2, '0')}`;
+    const end = new Date(`${nextYm}-01T00:00:00+09:00`);
+
+    const rows = await this.prisma.heatHourlyRecord.findMany({
+      where: {
+        ...(siteId ? { OR: [{ siteId }, { siteId: null }] } : {}),
+        recordedAt: { gte: start, lt: end },
+      },
+      orderBy: { recordedAt: 'asc' },
+      select: { wbgt: true, level: true, recordedAt: true },
+    });
+
+    // KOSHA 단계 심각도 순위
+    const RANK: Record<string, number> = {
+      normal: 0,
+      attention: 1,
+      caution: 2,
+      warning: 3,
+      danger: 4,
+    };
+    const LEVELS = ['normal', 'attention', 'caution', 'warning', 'danger'];
+
+    // 일별 집계 (KST 날짜 기준)
+    const dayMap = new Map<
+      string,
+      { max: number; sum: number; count: number; maxRank: number }
+    >();
+    for (const r of rows) {
+      const kstDate = new Date(r.recordedAt.getTime() + 9 * 3600_000)
+        .toISOString()
+        .slice(0, 10);
+      const wbgt = Number(r.wbgt);
+      const rank = RANK[r.level] ?? 0;
+      const d = dayMap.get(kstDate);
+      if (d) {
+        d.max = Math.max(d.max, wbgt);
+        d.sum += wbgt;
+        d.count += 1;
+        d.maxRank = Math.max(d.maxRank, rank);
+      } else {
+        dayMap.set(kstDate, { max: wbgt, sum: wbgt, count: 1, maxRank: rank });
+      }
+    }
+
+    const daysArr = Array.from(dayMap.entries())
+      .sort(([a], [b]) => a.localeCompare(b))
+      .map(([date, d]) => ({
+        date,
+        maxWbgt: Math.round(d.max * 10) / 10,
+        avgWbgt: Math.round((d.sum / d.count) * 10) / 10,
+        maxLevel: LEVELS[d.maxRank],
+        hours: d.count,
+      }));
+
+    const maxDay = daysArr.reduce(
+      (best, d) => (d.maxWbgt > (best?.maxWbgt ?? -Infinity) ? d : best),
+      null as (typeof daysArr)[number] | null,
+    );
+
+    return {
+      month: ym,
+      days: daysArr,
+      summary: {
+        recordedDays: daysArr.length,
+        cautionPlusDays: daysArr.filter((d) => RANK[d.maxLevel] >= 2).length,
+        warningPlusDays: daysArr.filter((d) => RANK[d.maxLevel] >= 3).length,
+        dangerDays: daysArr.filter((d) => RANK[d.maxLevel] >= 4).length,
+        maxWbgt: maxDay?.maxWbgt ?? null,
+        maxWbgtDate: maxDay?.date ?? null,
+      },
+    };
+  }
+
+  /**
    * 알림 목록 조회 (관리자 페이지용 — 향후 사용)
    */
   async findAll(siteId: string | null | undefined, days = 30) {
