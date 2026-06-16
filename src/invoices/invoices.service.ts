@@ -107,7 +107,7 @@ export class InvoicesService {
     });
   }
 
-  async findOne(id: string) {
+  async findOne(id: string, siteId?: string) {
     const inv = await this.prisma.invoice.findUnique({
       where: { id },
       include: {
@@ -116,6 +116,11 @@ export class InvoicesService {
       },
     });
     if (!inv) throw new NotFoundException('인보이스를 찾을 수 없습니다');
+    // 사이트 소유권 검증 — siteId가 지정된(비-MASTER) 경우 타 테넌트 청구서 접근 차단(IDOR 방어).
+    // 존재 여부 노출 방지를 위해 NotFound로 통일.
+    if (siteId && inv.siteId !== siteId) {
+      throw new NotFoundException('인보이스를 찾을 수 없습니다');
+    }
     return inv;
   }
 

@@ -8,6 +8,7 @@ import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateWorkerDto } from './dto/create-worker.dto';
 import { UpdateWorkerDto } from './dto/update-worker.dto';
+import { UsageLimitService } from '../subscriptions/usage-limit.service';
 
 /** 관리 역할 — 작업자 목록에서 제외 */
 const MANAGEMENT_ROLES = ['MASTER', 'ADMIN'] as const;
@@ -16,7 +17,10 @@ const MANAGEMENT_ROLES = ['MASTER', 'ADMIN'] as const;
 export class WorkersService {
   private readonly logger = new Logger(WorkersService.name);
 
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly usageLimit: UsageLimitService,
+  ) {}
 
   /**
    * 작업자 jobTrack 구 5트랙 → 신 4트랙 일괄 마이그레이션
@@ -185,6 +189,12 @@ export class WorkersService {
 
     // siteId 결정: DTO에 있으면 사용, 없으면 호출자의 siteId 자동 배정
     const siteId = dto.siteId || callerSiteId || null;
+
+    // 플랜 작업자 상한 강제 (siteId가 있고 ACTIVE 작업자일 때).
+    // 구독 없으면 canAddWorker=true라 자체운영/무료 사업장은 영향 없음.
+    if (siteId && dto.status !== 'INACTIVE') {
+      await this.usageLimit.enforceWorkerLimit(siteId);
+    }
 
     const worker = await this.prisma.worker.create({
       data: {

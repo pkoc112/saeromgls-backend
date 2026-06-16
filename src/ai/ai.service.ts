@@ -186,12 +186,20 @@ ${JSON.stringify(analysisData, null, 2)}
   /**
    * 생성된 인사이트 목록 조회
    */
-  async getInsights(params: { type?: string; page?: number; limit?: number }) {
+  async getInsights(params: {
+    type?: string;
+    page?: number;
+    limit?: number;
+    siteId?: string;
+  }) {
     const page = params.page || 1;
     const limit = params.limit || 20;
     const skip = (page - 1) * limit;
 
-    const where = params.type ? { type: params.type } : {};
+    // siteId가 지정된(비-MASTER) 경우 해당 사업장으로 격리. MASTER(undefined)는 전체.
+    const where: { type?: string; siteId?: string } = {};
+    if (params.type) where.type = params.type;
+    if (params.siteId) where.siteId = params.siteId;
 
     const [data, total] = await Promise.all([
       this.prisma.dashboardInsight.findMany({

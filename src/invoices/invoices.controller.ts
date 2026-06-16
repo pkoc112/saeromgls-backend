@@ -38,9 +38,14 @@ export class InvoicesController {
 
   @Get(':id')
   @Roles('ADMIN')
-  @ApiOperation({ summary: '인보이스 상세' })
-  findOne(@Param('id', ParseUUIDPipe) id: string) {
-    return this.invoicesService.findOne(id);
+  @ApiOperation({ summary: '인보이스 상세 (사이트 격리)' })
+  findOne(
+    @CurrentUser() user: JwtPayload,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    // resolveSiteId: 비-MASTER는 JWT siteId 강제, MASTER는 null(전체 허용)
+    const siteId = resolveSiteId(user);
+    return this.invoicesService.findOne(id, siteId);
   }
 
   @Post(':id/issue')

@@ -131,10 +131,13 @@ export class AiController {
   @ApiQuery({ name: 'limit', required: false, type: Number })
   @ApiResponse({ status: 200, description: '인사이트 목록 + 페이지네이션' })
   getInsights(
+    @CurrentUser() user: JwtPayload,
     @Query('type') type?: string,
     @Query('page') page?: number,
     @Query('limit') limit?: number,
   ) {
-    return this.aiService.getInsights({ type, page, limit });
+    // 사이트 격리 — 비-MASTER는 자기 사업장 인사이트만 (타 테넌트 운영요약 노출 차단)
+    const siteId = resolveSiteId(user);
+    return this.aiService.getInsights({ type, page, limit, siteId });
   }
 }
