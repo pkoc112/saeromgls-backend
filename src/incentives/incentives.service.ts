@@ -105,12 +105,14 @@ export class IncentivesService {
   async updatePolicyStatus(
     id: string,
     status: string,
-    options: { force?: boolean; reason?: string; actorId?: string } = {},
+    options: { force?: boolean; reason?: string; actorId?: string; siteId?: string } = {},
   ) {
     const validStatuses = ['DRAFT', 'SHADOW', 'ACTIVE', 'RETIRED'];
     if (!validStatuses.includes(status)) throw new BadRequestException(`유효하지 않은 상태입니다. 허용: ${validStatuses.join(', ')}`);
     const policy = await this.prisma.policyVersion.findUnique({ where: { id } });
     if (!policy) throw new NotFoundException('정책 버전을 찾을 수 없습니다');
+    // 사이트 소유권 검증 (비-MASTER는 자기 사업장 정책만 — IDOR 방어)
+    if (options.siteId && policy.siteId !== options.siteId) throw new NotFoundException('정책 버전을 찾을 수 없습니다');
     const transitions: Record<string, string[]> = { DRAFT: ['SHADOW', 'RETIRED'], SHADOW: ['ACTIVE', 'DRAFT', 'RETIRED'], ACTIVE: ['RETIRED'], RETIRED: [] };
     const allowed = transitions[policy.status] || [];
     if (!allowed.includes(status)) throw new BadRequestException(`${policy.status}에서 ${status}로 변경할 수 없습니다. 허용: ${allowed.join(', ') || '없음'}`);
@@ -772,12 +774,14 @@ export class IncentivesService {
     return { data, meta: { total, page, limit, totalPages: Math.ceil(total / limit) } };
   }
 
-  async getScoreRun(id: string) {
+  async getScoreRun(id: string, siteId?: string) {
     const run = await this.prisma.scoreRun.findUnique({
       where: { id },
       include: { policyVersion: { select: { id: true, name: true, track: true, weights: true } }, entries: { include: { worker: { select: { id: true, name: true, employeeCode: true } } }, orderBy: { totalScore: 'desc' } } },
     });
     if (!run) throw new NotFoundException('점수 실행을 찾을 수 없습니다');
+    // 사이트 소유권 검증 (비-MASTER는 자기 사업장만 — IDOR 방어, 존재 노출 방지 위해 NotFound)
+    if (siteId && run.siteId !== siteId) throw new NotFoundException('점수 실행을 찾을 수 없습니다');
     return { ...run, entries: run.entries.map((e) => ({ ...e, performanceScore: Number(e.performanceScore), reliabilityScore: Number(e.reliabilityScore), teamworkScore: Number(e.teamworkScore), totalScore: Number(e.totalScore) })) };
   }
 
@@ -786,17 +790,19 @@ export class IncentivesService {
     return entries.map((e) => ({ ...e, performanceScore: Number(e.performanceScore), reliabilityScore: Number(e.reliabilityScore), teamworkScore: Number(e.teamworkScore), totalScore: Number(e.totalScore) }));
   }
 
-  async freezeScoreRun(id: string) {
+  async freezeScoreRun(id: string, siteId?: string) {
     const run = await this.prisma.scoreRun.findUnique({ where: { id } });
     if (!run) throw new NotFoundException('점수 실행을 찾을 수 없습니다');
+    if (siteId && run.siteId !== siteId) throw new NotFoundException('점수 실행을 찾을 수 없습니다');
     if (!['RUNNING', 'SHADOW'].includes(run.status)) throw new BadRequestException('RUNNING 또는 SHADOW 상태만 동결 가능합니다');
     await this.prisma.scoreRun.update({ where: { id }, data: { status: 'FROZEN', frozenAt: new Date() } });
     return this.getScoreRun(id);
   }
 
-  async finalizeScoreRun(id: string) {
+  async finalizeScoreRun(id: string, siteId?: string) {
     const run = await this.prisma.scoreRun.findUnique({ where: { id }, include: { entries: { select: { id: true } } } });
     if (!run) throw new NotFoundException('점수 실행을 찾을 수 없습니다');
+    if (siteId && run.siteId !== siteId) throw new NotFoundException('점수 실행을 찾을 수 없습니다');
     if (run.status !== 'FROZEN') throw new BadRequestException('동결 상태만 확정 가능합니다');
     const entryIds = run.entries.map((e) => e.id);
     if (entryIds.length > 0) {
@@ -807,9 +813,10 @@ export class IncentivesService {
     return this.getScoreRun(id);
   }
 
-  async recalculateAfterObjection(scoreRunId: string) {
+  async recalculateAfterObjection(scoreRunId: string, siteId?: string) {
     const run = await this.prisma.scoreRun.findUnique({ where: { id: scoreRunId }, include: { policyVersion: true, entries: { select: { id: true } } } });
     if (!run) throw new NotFoundException('점수 실행을 찾을 수 없습니다');
+    if (siteId && run.siteId !== siteId) throw new NotFoundException('점수 실행을 찾을 수 없습니다');
     const entryIds = run.entries.map((e) => e.id);
     let accepted = 0;
     if (entryIds.length > 0) accepted = await this.prisma.objectionCase.count({ where: { scoreEntryId: { in: entryIds }, status: 'ACCEPTED' } });
@@ -846,9 +853,10 @@ export class IncentivesService {
     return obj;
   }
 
-  async resolveObjection(id: string, resolution: string, resolvedBy: string) {
+  async resolveObjection(id: string, resolution: string, resolvedBy: string, siteId?: string) {
     const obj = await this.prisma.objectionCase.findUnique({ where: { id } });
     if (!obj) throw new NotFoundException('이의신청을 찾을 수 없습니다');
+    if (siteId && obj.siteId !== siteId) throw new NotFoundException('이의신청을 찾을 수 없습니다');
     if (!['OPEN', 'REVIEWING'].includes(obj.status)) throw new BadRequestException('OPEN 또는 REVIEWING만 처리 가능');
     const isAccepted = resolution.toLowerCase().startsWith('accept');
     return this.prisma.objectionCase.update({
@@ -887,12 +895,13 @@ export class IncentivesService {
   // Payout — 등급형 지급
   // ════════════════════════════════════════════════════════════════
 
-  async generatePayoutDryRun(scoreRunId: string, baseIncentive: number = 500000) {
+  async generatePayoutDryRun(scoreRunId: string, baseIncentive: number = 500000, siteId?: string) {
     const run = await this.prisma.scoreRun.findUnique({
       where: { id: scoreRunId },
       include: { policyVersion: { select: { id: true, name: true, track: true, weights: true, details: true } }, entries: { include: { worker: { select: { id: true, name: true, employeeCode: true } } }, orderBy: { totalScore: 'desc' } } },
     });
     if (!run) throw new NotFoundException('점수 실행을 찾을 수 없습니다');
+    if (siteId && run.siteId !== siteId) throw new NotFoundException('점수 실행을 찾을 수 없습니다');
 
     let payoutBands = DEFAULT_PAYOUT_BANDS;
     if (run.policyVersion?.details) {

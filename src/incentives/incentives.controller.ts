@@ -176,6 +176,7 @@ export class IncentivesController {
       force: !!force,
       reason,
       actorId: user?.sub,
+      siteId: user ? resolveSiteId(user) : undefined,
     });
   }
 
@@ -216,32 +217,32 @@ export class IncentivesController {
   @Roles('ADMIN')
   @ApiOperation({ summary: '점수 실행 상세 조회' })
   @ApiParam({ name: 'id', description: '점수 실행 UUID' })
-  getScoreRun(@Param('id', ParseUUIDPipe) id: string) {
-    return this.incentivesService.getScoreRun(id);
+  getScoreRun(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: JwtPayload) {
+    return this.incentivesService.getScoreRun(id, resolveSiteId(user));
   }
 
   @Post('score-runs/:id/freeze')
   @Roles('ADMIN')
   @ApiOperation({ summary: '점수 실행 동결' })
   @ApiParam({ name: 'id', description: '점수 실행 UUID' })
-  freezeScoreRun(@Param('id', ParseUUIDPipe) id: string) {
-    return this.incentivesService.freezeScoreRun(id);
+  freezeScoreRun(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: JwtPayload) {
+    return this.incentivesService.freezeScoreRun(id, resolveSiteId(user));
   }
 
   @Post('score-runs/:id/finalize')
   @Roles('ADMIN')
   @ApiOperation({ summary: '점수 실행 확정' })
   @ApiParam({ name: 'id', description: '점수 실행 UUID' })
-  finalizeScoreRun(@Param('id', ParseUUIDPipe) id: string) {
-    return this.incentivesService.finalizeScoreRun(id);
+  finalizeScoreRun(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: JwtPayload) {
+    return this.incentivesService.finalizeScoreRun(id, resolveSiteId(user));
   }
 
   @Post('score-runs/:id/recalculate')
   @Roles('ADMIN')
   @ApiOperation({ summary: '이의신청 반영 재계산' })
   @ApiParam({ name: 'id', description: '원본 점수 실행 UUID' })
-  recalculateScoreRun(@Param('id', ParseUUIDPipe) id: string) {
-    return this.incentivesService.recalculateAfterObjection(id);
+  recalculateScoreRun(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: JwtPayload) {
+    return this.incentivesService.recalculateAfterObjection(id, resolveSiteId(user));
   }
 
   @Get('objections')
@@ -273,7 +274,7 @@ export class IncentivesController {
     @Body('resolution') resolution: string,
     @CurrentUser() user: JwtPayload,
   ) {
-    return this.incentivesService.resolveObjection(id, resolution, user.sub);
+    return this.incentivesService.resolveObjection(id, resolution, user.sub, resolveSiteId(user));
   }
 
   @Get('policy-packs')
@@ -302,9 +303,10 @@ export class IncentivesController {
   @ApiParam({ name: 'id', description: '점수 실행 UUID' })
   getPayoutPreview(
     @Param('id', ParseUUIDPipe) id: string,
+    @CurrentUser() user: JwtPayload,
     @Query('baseIncentive') baseIncentiveStr?: string,
   ) {
     const baseIncentive = baseIncentiveStr ? Number(baseIncentiveStr) : 500000;
-    return this.incentivesService.generatePayoutDryRun(id, baseIncentive);
+    return this.incentivesService.generatePayoutDryRun(id, baseIncentive, resolveSiteId(user));
   }
 }
