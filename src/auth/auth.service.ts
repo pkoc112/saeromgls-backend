@@ -5,7 +5,7 @@ import {
   NotFoundException,
   Logger,
 } from '@nestjs/common';
-import { randomUUID } from 'crypto';
+import { randomUUID, randomBytes, createHash } from 'crypto';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import { Resend } from 'resend';
@@ -457,6 +457,176 @@ export class AuthService {
 
     this.logger.log(`Password reset for: ${maskEmail(email)}`);
     return { message: '비밀번호가 성공적으로 재설정되었습니다' };
+  }
+
+  // ──────────────────────────────────────────────
+  // 관리자 초대 / 첫 로그인 (P0: PIN 평문 수동전달 대체)
+  // ──────────────────────────────────────────────
+
+  private hashInviteToken(token: string): string {
+    return createHash('sha256').update(token).digest('hex');
+  }
+
+  /**
+   * 관리자/반장 초대 생성 — 일회용 토큰 링크 반환 (평문 토큰은 1회만, DB엔 해시만)
+   * 권한: MASTER=임의 사업장, ADMIN=자기 사업장만. 대상 역할은 ADMIN/SUPERVISOR만(권한상승 방지).
+   */
+  async createAdminInvite(
+    dto: { email: string; name: string; role?: string; siteId?: string },
+    inviter: JwtPayload,
+  ) {
+    const email = dto.email?.trim().toLowerCase();
+    const name = dto.name?.trim();
+    if (!email || !name) throw new BadRequestException('이메일과 이름은 필수입니다');
+
+    const role = (dto.role || 'ADMIN').toUpperCase();
+    if (!['ADMIN', 'SUPERVISOR'].includes(role)) {
+      throw new BadRequestException('초대 가능한 역할은 ADMIN 또는 SUPERVISOR입니다');
+    }
+
+    let siteId: string | null;
+    if (inviter.role === 'MASTER') {
+      siteId = dto.siteId ?? null;
+    } else if (inviter.role === 'ADMIN') {
+      if (dto.siteId && dto.siteId !== inviter.siteId) {
+        throw new BadRequestException('자신의 사업장으로만 초대할 수 있습니다');
+      }
+      siteId = inviter.siteId ?? null;
+    } else {
+      throw new BadRequestException('관리자 초대 권한이 없습니다');
+    }
+
+    const existing = await this.prisma.worker.findUnique({
+      where: { email },
+      select: { id: true },
+    });
+    if (existing) throw new BadRequestException('이미 가입된 이메일입니다');
+
+    const token = randomBytes(32).toString('hex');
+    const tokenHash = this.hashInviteToken(token);
+    const expiresAt = new Date(Date.now() + 72 * 60 * 60 * 1000); // 72h
+
+    // 같은 이메일의 미수락 초대는 정리 (재초대 시 최신만 유효)
+    await this.prisma.adminInvite.deleteMany({ where: { email, acceptedAt: null } });
+    await this.prisma.adminInvite.create({
+      data: { email, name, role, siteId, tokenHash, expiresAt, createdBy: inviter.sub },
+    });
+
+    const baseUrl = process.env.WEB_BASE_URL || 'https://sae-work.com';
+    const inviteUrl = `${baseUrl}/accept-invite?token=${token}`;
+    this.logger.log(`Admin invite created: ${maskEmail(email)} (${role})`);
+    return { inviteUrl, email, name, role, expiresAt };
+  }
+
+  /** 초대 토큰 조회 (수락 페이지용 — 만료/사용 검증) */
+  async getAdminInvite(token: string) {
+    if (!token) throw new BadRequestException('토큰이 필요합니다');
+    const invite = await this.prisma.adminInvite.findFirst({
+      where: { tokenHash: this.hashInviteToken(token) },
+    });
+    if (!invite) throw new NotFoundException('유효하지 않은 초대입니다');
+    if (invite.acceptedAt) throw new BadRequestException('이미 사용된 초대입니다');
+    if (invite.expiresAt < new Date()) throw new BadRequestException('만료된 초대입니다');
+    let siteName: string | null = null;
+    if (invite.siteId) {
+      const site = await this.prisma.site.findUnique({
+        where: { id: invite.siteId },
+        select: { name: true },
+      });
+      siteName = site?.name ?? null;
+    }
+    return { email: invite.email, name: invite.name, role: invite.role, siteName };
+  }
+
+  /** 초대 수락 — 비밀번호 설정 → 계정 생성 + 로그인 토큰 반환 */
+  async acceptAdminInvite(token: string, password: string) {
+    if (!token || !password) throw new BadRequestException('토큰과 비밀번호가 필요합니다');
+    if (password.length < 8) throw new BadRequestException('비밀번호는 8자 이상이어야 합니다');
+
+    const invite = await this.prisma.adminInvite.findFirst({
+      where: { tokenHash: this.hashInviteToken(token) },
+    });
+    if (!invite) throw new NotFoundException('유효하지 않은 초대입니다');
+    if (invite.acceptedAt) throw new BadRequestException('이미 사용된 초대입니다');
+    if (invite.expiresAt < new Date()) throw new BadRequestException('만료된 초대입니다');
+
+    const dup = await this.prisma.worker.findUnique({
+      where: { email: invite.email },
+      select: { id: true },
+    });
+    if (dup) throw new BadRequestException('이미 가입된 이메일입니다');
+
+    const passwordHash = await bcrypt.hash(password, 10);
+    // pin은 스키마상 필수지만 관리자는 PIN 로그인 미사용 → 랜덤 미사용값 해시
+    const pinHash = await bcrypt.hash(randomBytes(8).toString('hex'), 10);
+
+    // 고유 사번 생성 (충돌 시 재시도)
+    const prefix = invite.role === 'SUPERVISOR' ? 'SUP' : 'ADM';
+    let employeeCode = '';
+    for (let i = 0; i < 5; i++) {
+      const cand = `${prefix}-${Date.now().toString(36).toUpperCase()}-${Math.random()
+        .toString(36)
+        .slice(2, 5)
+        .toUpperCase()}`;
+      const ex = await this.prisma.worker.findUnique({
+        where: { employeeCode: cand },
+        select: { id: true },
+      });
+      if (!ex) {
+        employeeCode = cand;
+        break;
+      }
+    }
+    if (!employeeCode) throw new BadRequestException('사번 생성 실패 — 다시 시도해주세요');
+
+    const worker = await this.prisma.worker.create({
+      data: {
+        name: invite.name,
+        email: invite.email,
+        employeeCode,
+        pin: pinHash,
+        passwordHash,
+        role: invite.role,
+        status: 'ACTIVE',
+        emailVerified: true,
+        ...(invite.siteId && { siteId: invite.siteId }),
+      },
+      select: {
+        id: true,
+        name: true,
+        role: true,
+        email: true,
+        employeeCode: true,
+        siteId: true,
+      },
+    });
+
+    await this.prisma.adminInvite.update({
+      where: { id: invite.id },
+      data: { acceptedAt: new Date() },
+    });
+
+    const tok = await this.generateToken(
+      worker.id,
+      worker.role,
+      worker.employeeCode,
+      worker.siteId ?? undefined,
+    );
+    this.logger.log(
+      `Admin invite accepted: ${maskEmail(invite.email)} → ${worker.employeeCode}`,
+    );
+    return {
+      access_token: tok.accessToken,
+      refresh_token: tok.refreshToken,
+      user: {
+        id: worker.id,
+        name: worker.name,
+        role: worker.role.toLowerCase(),
+        email: worker.email,
+        employeeCode: worker.employeeCode,
+        siteId: worker.siteId,
+      },
+    };
   }
 
   // ──────────────────────────────────────────────

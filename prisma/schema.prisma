@@ -401,6 +401,27 @@ model VerificationCode {
   @@map("verification_codes")
 }
 
+/// 관리자 초대 — 신규 테넌트 관리자/반장 온보딩
+/// - 운영자가 초대 생성 → 일회용 토큰 링크 전달 → 초대받은 사람이 직접 비밀번호 설정
+/// - PIN 평문 수동전달 대체 (상용화 P0)
+/// - 토큰은 평문 미저장(SHA-256 해시만). 만료 72h, 1회 수락.
+model AdminInvite {
+  id         String    @id @default(uuid())
+  email      String
+  name       String
+  role       String    // 'ADMIN' | 'SUPERVISOR'
+  siteId     String?   @map("site_id")
+  tokenHash  String    @map("token_hash") // SHA-256(token)
+  expiresAt  DateTime  @map("expires_at")
+  acceptedAt DateTime? @map("accepted_at")
+  createdBy  String?   @map("created_by") // 초대한 관리자 workerId
+  createdAt  DateTime  @default(now()) @map("created_at")
+
+  @@index([tokenHash])
+  @@index([siteId])
+  @@map("admin_invites")
+}
+
 /// 백업 작업
 model BackupJob {
   id          String    @id @default(uuid())

@@ -19,8 +19,10 @@ import {
 } from '@nestjs/swagger';
 import { Throttle } from '@nestjs/throttler';
 import { Request } from 'express';
-import { CurrentUser } from '../common/decorators/current-user.decorator';
+import { CurrentUser, JwtPayload } from '../common/decorators/current-user.decorator';
 import { AuthService } from './auth.service';
+import { RolesGuard } from './roles.guard';
+import { Roles } from './roles.decorator';
 import { DeleteAccountDto } from './dto/delete-account.dto';
 import { EmailLoginDto } from './dto/email-login.dto';
 import { LoginDto } from './dto/login.dto';
@@ -178,6 +180,40 @@ export class AuthController {
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
   async verifyEmail(@Body() dto: { email: string; code: string }) {
     return this.authService.verifyEmail(dto.email, dto.code);
+  }
+
+  // ── 관리자 초대 / 첫 로그인 (P0: PIN 평문 수동전달 대체) ──
+
+  @Post('admin/auth/invite')
+  @HttpCode(HttpStatus.CREATED)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN')
+  @ApiBearerAuth()
+  @ApiTags('Admin Auth')
+  @ApiOperation({ summary: '관리자/반장 초대 생성 (일회용 링크 반환)' })
+  async inviteAdmin(
+    @Body() dto: { email: string; name: string; role?: string; siteId?: string },
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.authService.createAdminInvite(dto, user);
+  }
+
+  @Get('auth/invite/:token')
+  @ApiTags('Auth')
+  @ApiOperation({ summary: '초대 정보 조회 (수락 페이지용)' })
+  @Throttle({ default: { limit: 20, ttl: 60_000 } })
+  async getInvite(@Param('token') token: string) {
+    return this.authService.getAdminInvite(token);
+  }
+
+  @Post('auth/accept-invite')
+  @HttpCode(HttpStatus.OK)
+  @ApiTags('Auth')
+  @ApiOperation({ summary: '초대 수락 — 비밀번호 설정 후 로그인' })
+  // 토큰 brute force 방어
+  @Throttle({ default: { limit: 5, ttl: 60_000 } })
+  async acceptInvite(@Body() dto: { token: string; password: string }) {
+    return this.authService.acceptAdminInvite(dto.token, dto.password);
   }
 
   @Get('auth/me')
