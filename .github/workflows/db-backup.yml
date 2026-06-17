@@ -26,12 +26,41 @@ jobs:
           # Neon pooled URL은 pg_dump가 정상 dump 못 하므로 unpooled(direct) URL 사용
           DATABASE_URL: ${{ secrets.DATABASE_URL_DIRECT }}
         run: |
+          # pg_dump 실패가 빈 백업으로 조용히 묻히지 않도록 pipefail 필수 (pg_dump | gzip)
+          set -o pipefail
           # Vercel env pull 시 trailing whitespace/newline이 secret에 섞여 들어가
           # pg_dump는 통과하나 psql이 sslmode 파싱에서 깨지므로 명시적으로 정리.
           CLEAN_URL=$(printf %s "$DATABASE_URL" | tr -d '[:space:]')
           TIMESTAMP=$(date +%Y%m%d_%H%M%S)
           FILENAME="backup_${TIMESTAMP}.sql.gz"
-          pg_dump "$CLEAN_URL" | gzip > "$FILENAME"
+          # 연결당 최대 20초 (콜드스타트 시 14분씩 매달리던 문제 방지)
+          export PGCONNECT_TIMEOUT=20
+
+          # Neon 컴퓨트가 콜드/일시 unreachable이면 첫 연결이 타임아웃날 수 있어,
+          # 백업 전에 가벼운 쿼리로 깨우고 최대 5회 재시도(점증 백오프).
+          # (2026-06-16 콜드스타트 연결 타임아웃으로 빈 백업 생성된 사고 대응)
+          READY=0
+          for i in 1 2 3 4 5; do
+            if psql "$CLEAN_URL" -t -c "SELECT 1" >/dev/null 2>&1; then
+              echo "DB reachable (warm-up attempt $i)"; READY=1; break
+            fi
+            echo "DB not ready (attempt $i) — retrying in $((i*10))s..."; sleep $((i*10))
+          done
+          if [ "$READY" -ne 1 ]; then
+            echo "ERROR: DB unreachable after warm-up retries"; exit 1
+          fi
+
+          # pg_dump 도 재시도 — 실패 시 즉시 비정상 종료(빈 백업 방지)
+          DUMP_OK=0
+          for i in 1 2 3; do
+            if pg_dump "$CLEAN_URL" | gzip > "$FILENAME"; then
+              DUMP_OK=1; break
+            fi
+            echo "pg_dump failed (attempt $i) — retrying in $((i*15))s..."; sleep $((i*15))
+          done
+          if [ "$DUMP_OK" -ne 1 ]; then
+            echo "ERROR: pg_dump failed after retries"; exit 1
+          fi
           echo "FILENAME=$FILENAME" >> $GITHUB_ENV
           echo "Backup created: $FILENAME ($(du -h $FILENAME | cut -f1))"
 
@@ -47,7 +76,9 @@ jobs:
           # Neon pooled URL은 pg_dump가 정상 dump 못 하므로 unpooled(direct) URL 사용
           DATABASE_URL: ${{ secrets.DATABASE_URL_DIRECT }}
         run: |
+          set -o pipefail
           CLEAN_URL=$(printf %s "$DATABASE_URL" | tr -d '[:space:]')
+          export PGCONNECT_TIMEOUT=20
           # 테이블 수 확인
           TABLE_COUNT=$(psql "$CLEAN_URL" -t -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public'" | tr -d '[:space:]')
           echo "Tables in DB: $TABLE_COUNT"
@@ -56,8 +87,8 @@ jobs:
           BACKUP_SIZE=$(du -h ${{ env.FILENAME }} | cut -f1)
           echo "Backup size: $BACKUP_SIZE"
 
-          if [ "$TABLE_COUNT" -lt 5 ]; then
-            echo "ERROR: Less than 5 tables found!"
+          if [ -z "$TABLE_COUNT" ] || [ "$TABLE_COUNT" -lt 5 ]; then
+            echo "ERROR: table count check failed (got '$TABLE_COUNT')"
             exit 1
           fi
           # 백업 크기 sanity (1KB 미만이면 의심)
