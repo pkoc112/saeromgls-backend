@@ -35,8 +35,10 @@ export class InvoicesService {
     dueDate.setDate(15); // 매월 15일
 
     // 활성 구독 조회 (TRIAL은 무료, ACTIVE만 청구)
+    // ★ YEARLY 구독은 월간 cron에서 제외 — 연요금이 매달(12배) 청구되는 버그 방지.
+    //   연 구독 갱신은 입금확인(markPaid) 시 currentPeriodEnd +12개월으로 처리됨.
     const subs = await this.prisma.subscription.findMany({
-      where: { status: 'ACTIVE' },
+      where: { status: 'ACTIVE', billingCycle: 'MONTHLY' },
       include: {
         plan: true,
         site: { select: { id: true, name: true, code: true } },
@@ -51,7 +53,8 @@ export class InvoicesService {
     };
 
     for (const sub of subs) {
-      const invoiceNumber = `${month.replace('-', '')}-${sub.site.code}-001`;
+      // 구독 id 일부를 suffix로 — 같은 사이트 다중 ACTIVE 구독 시 번호 충돌(무청구) 방지
+      const invoiceNumber = `${month.replace('-', '')}-${sub.site.code}-${sub.id.slice(0, 6)}`;
       try {
         const existing = await this.prisma.invoice.findUnique({
           where: { invoiceNumber },
@@ -70,7 +73,10 @@ export class InvoicesService {
             siteId: sub.siteId,
             subscriptionId: sub.id,
             invoiceNumber,
-            status: 'DRAFT',
+            // 자동 발행(ISSUED)으로 생성 — checkOverdue(ISSUED&dueDate<now)가 동작하도록
+            // (DRAFT로 두면 수동 발행 전까지 OVERDUE 전이가 영원히 안 됨)
+            status: 'ISSUED',
+            issuedAt: new Date(),
             amount,
             taxAmount: tax,
             totalAmount: total,

@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsBoolean, IsIn, IsOptional, IsString, IsUUID, Length } from 'class-validator';
+import { IsBoolean, IsIn, IsOptional, IsString, IsUUID, Length, Matches } from 'class-validator';
 
 export class UpdateWorkerDto {
   @ApiProperty({
@@ -76,4 +76,22 @@ export class UpdateWorkerDto {
   @IsBoolean()
   @IsOptional()
   mobileVisible?: boolean;
+
+  @ApiProperty({
+    description: '로그인 이메일 (관리자/감독관 계정). 빈 값이면 해제.',
+    required: false,
+  })
+  @IsString()
+  @IsOptional()
+  @Matches(/^$|^[^@\s]+@[^@\s]+\.[^@\s]+$/, { message: '올바른 이메일 형식이 아닙니다' })
+  email?: string;
+
+  @ApiProperty({
+    description: '로그인 비밀번호 재설정 (관리자/감독관 이메일 로그인용). 4자리 이상.',
+    required: false,
+  })
+  @IsString()
+  @IsOptional()
+  @Length(4, 100)
+  password?: string;
 }

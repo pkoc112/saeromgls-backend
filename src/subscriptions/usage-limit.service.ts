@@ -4,6 +4,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { resolveBillingSiteId } from '../common/utils/billing-site';
 
 @Injectable()
 export class UsageLimitService {
@@ -92,9 +93,11 @@ export class UsageLimitService {
   // ── private helpers ──
 
   private async getWorkerUsage(siteId: string) {
+    // ★ 플랜은 루트(청구) 사이트 구독 기준 — 하위 사업장은 부모 플랜 상속
+    const billingSiteId = await resolveBillingSiteId(this.prisma, siteId);
     const subscription = await this.prisma.subscription.findFirst({
       where: {
-        siteId,
+        siteId: billingSiteId,
         status: { in: ['ACTIVE', 'TRIAL'] },
       },
       include: { plan: true },
@@ -112,16 +115,12 @@ export class UsageLimitService {
   }
 
   private async getSiteUsage(siteId: string) {
-    // 같은 구독(플랜) 아래의 모든 사업장 수 계산
-    // parentSiteId가 같은 사업장 + 자기 자신
-    const site = await this.prisma.site.findUnique({
-      where: { id: siteId },
-      select: { parentSiteId: true },
-    });
+    // ★ 루트(청구) 사업장 기준으로 플랜·하위 사업장 수 계산 (다단계 부모 체인 해석)
+    const rootSiteId = await resolveBillingSiteId(this.prisma, siteId);
 
     const subscription = await this.prisma.subscription.findFirst({
       where: {
-        siteId,
+        siteId: rootSiteId,
         status: { in: ['ACTIVE', 'TRIAL'] },
       },
       include: { plan: true },
@@ -129,7 +128,6 @@ export class UsageLimitService {
     });
 
     // 루트 사업장 기준으로 하위 사업장 수 계산
-    const rootSiteId = site?.parentSiteId ?? siteId;
     const currentSites = await this.prisma.site.count({
       where: {
         OR: [

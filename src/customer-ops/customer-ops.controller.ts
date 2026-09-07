@@ -8,6 +8,7 @@ import {
   Post,
   Query,
   UseGuards,
+  BadRequestException,
 } from '@nestjs/common';
 import { JwtPayload, CurrentUser } from '../common/decorators/current-user.decorator';
 import { resolveSiteId } from '../common/utils/site-scope';
@@ -75,9 +76,10 @@ export class CustomerOpsController {
     @Body() dto: CreateSupportCaseDto,
     @CurrentUser() user: JwtPayload,
   ) {
-    if (user.role !== 'MASTER') {
-      dto.siteId = user.siteId || dto.siteId;
-    }
+    // ★ siteId 강제: 비-MASTER는 자기 사업장만 (|| fallthrough로 body siteId 위조 차단)
+    const siteId = resolveSiteId(user, dto.siteId);
+    if (!siteId) throw new BadRequestException('siteId가 필요합니다');
+    dto.siteId = siteId;
     return this.customerOpsService.createSupportCase(dto);
   }
 
@@ -88,6 +90,13 @@ export class CustomerOpsController {
     @Body() dto: ResolveSupportCaseDto,
   ) {
     return this.customerOpsService.resolveSupportCase(id, dto);
+  }
+
+  // 계정 잠금 해제 (MASTER) — 보안 콘솔에서 잠긴 작업자 즉시 해제
+  @Post('unlock-account')
+  @Roles('MASTER')
+  unlockAccount(@Body('workerId', ParseUUIDPipe) workerId: string) {
+    return this.customerOpsService.unlockAccount(workerId);
   }
 
   @Post('usage-snapshots')
@@ -118,10 +127,10 @@ export class CustomerOpsController {
     @Body() dto: StartOnboardingRunDto,
     @CurrentUser() user: JwtPayload,
   ) {
-    if (user.role !== 'MASTER') {
-      dto.siteId = user.siteId || dto.siteId;
-    }
-    return this.customerOpsService.startOnboardingRun(dto.siteId);
+    // ★ siteId 강제: 비-MASTER는 자기 사업장만 (|| fallthrough 차단)
+    const siteId = resolveSiteId(user, dto.siteId);
+    if (!siteId) throw new BadRequestException('siteId가 필요합니다');
+    return this.customerOpsService.startOnboardingRun(siteId);
   }
 
   @Patch('onboarding-runs/:id')

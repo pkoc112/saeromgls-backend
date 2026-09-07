@@ -2,6 +2,7 @@ import {
   Injectable,
   NotFoundException,
   BadRequestException,
+  ForbiddenException,
   Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
@@ -279,6 +280,13 @@ export class InspectionService {
     });
     if (!inspector || inspector.status !== 'ACTIVE') {
       throw new BadRequestException('유효하지 않은 검수자입니다');
+    }
+
+    // ★ IDOR 방어: 비-MASTER(siteId 지정됨)는 자기 사업장 작업만 검수 가능.
+    //   대상 작업이 다른 사업장 소속이면 차단 (자기 커버리지 통계 오염/위조 방지)
+    const itemSiteId = workItem.startedByWorker?.siteId;
+    if (siteId && itemSiteId && itemSiteId !== siteId) {
+      throw new ForbiddenException('다른 사업장의 작업은 검수할 수 없습니다');
     }
 
     // ★ siteId가 미지정이면 대상 작업 작업자의 siteId 사용 (MASTER 케이스)

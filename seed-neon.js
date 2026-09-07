@@ -57,7 +57,14 @@ async function seed() {
     console.log(`${name} (${code}): ${r.command || r.message || 'ok'}`);
   }
 
-  // Top-level category classifications (DO UPDATE to fix displayName format with prefix)
+  // 기본 사업장(첫 사이트) 조회 — 분류를 이 사이트에 직접 시드 (복합키 (site_id, code) 호환).
+  // 전역 @unique(code)가 (site_id, code) 복합 unique로 바뀌어, ON CONFLICT(code) 대신
+  // site 스코프 idempotent INSERT(IS NOT DISTINCT FROM)로 처리한다.
+  const siteResult = await runSQL("SELECT id, name FROM sites ORDER BY created_at ASC LIMIT 1");
+  const defaultSiteId = siteResult.rows && siteResult.rows.length > 0 ? siteResult.rows[0].id : null;
+  const defaultSiteName = siteResult.rows && siteResult.rows.length > 0 ? siteResult.rows[0].name : '(none)';
+
+  // Top-level category classifications — 기본 사이트에 시드 + displayName/sortOrder 최신화
   const topCats = [
     ['DC',      '[DC] DC (물류센터)',        1],
     ['AGENCY',  '[대리점] 대리점',            2],
@@ -68,14 +75,18 @@ async function seed() {
   ];
 
   for (const [code, name, order] of topCats) {
+    await runSQL(
+      "INSERT INTO classifications (id, code, display_name, sort_order, is_active, site_id, created_at) SELECT gen_random_uuid(), $1, $2, $3, true, $4, NOW() WHERE NOT EXISTS (SELECT 1 FROM classifications WHERE code=$1 AND site_id IS NOT DISTINCT FROM $4)",
+      [code, name, order, defaultSiteId]
+    );
     const r = await runSQL(
-      "INSERT INTO classifications (id, code, display_name, sort_order, is_active, created_at) VALUES (gen_random_uuid(), $1, $2, $3, true, NOW()) ON CONFLICT (code) DO UPDATE SET display_name=$2, sort_order=$3",
-      [code, name, order]
+      "UPDATE classifications SET display_name=$2, sort_order=$3 WHERE code=$1 AND site_id IS NOT DISTINCT FROM $4",
+      [code, name, order, defaultSiteId]
     );
     console.log(`Category ${code}: ${r.command || r.message || 'ok'}`);
   }
 
-  // Child classifications (DO NOTHING to preserve any user edits)
+  // Child classifications (DO NOTHING to preserve any user edits) — 기본 사이트에 신규만 삽입
   const cls = [
     ['DC_001', '[DC] 건과)DC_포항', 10], ['DC_002', '[DC] 건과)DC_동부', 11],
     ['DC_003', '[DC] 건과)DC_서부', 12], ['DC_004', '[DC] 건과)DC_안동', 13],
@@ -88,18 +99,14 @@ async function seed() {
 
   for (const [code, name, order] of cls) {
     const r = await runSQL(
-      "INSERT INTO classifications (id, code, display_name, sort_order, is_active, created_at) VALUES (gen_random_uuid(), $1, $2, $3, true, NOW()) ON CONFLICT (code) DO NOTHING",
-      [code, name, order]
+      "INSERT INTO classifications (id, code, display_name, sort_order, is_active, site_id, created_at) SELECT gen_random_uuid(), $1, $2, $3, true, $4, NOW() WHERE NOT EXISTS (SELECT 1 FROM classifications WHERE code=$1 AND site_id IS NOT DISTINCT FROM $4)",
+      [code, name, order, defaultSiteId]
     );
     console.log(`Classification ${code}: ${r.command || r.message || 'ok'}`);
   }
 
-  // ── siteId 미배정 데이터에 첫 번째 사업장 자동 배정 ──
-  const siteResult = await runSQL("SELECT id, name FROM sites ORDER BY created_at ASC LIMIT 1");
-  if (siteResult.rows && siteResult.rows.length > 0) {
-    const defaultSiteId = siteResult.rows[0].id;
-    const defaultSiteName = siteResult.rows[0].name;
-
+  // ── 레거시 NULL siteId 데이터에 첫 번째 사업장 자동 배정 ──
+  if (defaultSiteId) {
     // 작업자 siteId 배정
     const workerResult = await runSQL(
       "UPDATE workers SET site_id = $1, updated_at = NOW() WHERE site_id IS NULL",
@@ -107,9 +114,9 @@ async function seed() {
     );
     console.log(`\nNULL siteId 작업자 → ${defaultSiteName} 배정: ${workerResult.command || 'ok'}`);
 
-    // 분류 siteId 배정 (크리티컬: 멀티테넌트 격리)
+    // NULL siteId 분류 배정 — 단, 같은 (site, code)가 이미 있으면 복합 unique 충돌하므로 제외
     const classResult = await runSQL(
-      "UPDATE classifications SET site_id = $1 WHERE site_id IS NULL",
+      "UPDATE classifications c SET site_id = $1 WHERE c.site_id IS NULL AND NOT EXISTS (SELECT 1 FROM classifications c2 WHERE c2.code = c.code AND c2.site_id = $1)",
       [defaultSiteId]
     );
     console.log(`NULL siteId 분류 → ${defaultSiteName} 배정: ${classResult.command || 'ok'}`);

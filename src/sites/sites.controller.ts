@@ -65,7 +65,7 @@ export class SitesController {
         throw new BadRequestException('본인 사업장 하위에만 서브 사업장을 생성할 수 있습니다');
       }
     }
-    return this.sitesService.create(dto);
+    return this.sitesService.create(dto, user.sub);
   }
 
   @Patch('admin/sites/:id')
@@ -123,8 +123,8 @@ export class SitesController {
   @ApiResponse({ status: 204, description: '삭제(비활성화) 완료' })
   @ApiResponse({ status: 400, description: 'DEFAULT 사업장 삭제 불가' })
   @ApiResponse({ status: 404, description: '사업장 없음' })
-  remove(@Param('id', ParseUUIDPipe) id: string) {
-    return this.sitesService.remove(id);
+  remove(@Param('id', ParseUUIDPipe) id: string, @CurrentUser() user: JwtPayload) {
+    return this.sitesService.remove(id, user.sub);
   }
 
   /**

@@ -142,10 +142,10 @@ export class DashboardController {
     @Body() body: { siteId: string; periodType: string; targetCount?: number; targetVolume?: number; targetQuantity?: number },
     @CurrentUser() user: JwtPayload,
   ) {
-    if (user?.role !== 'MASTER' && user?.siteId) {
-      body.siteId = user.siteId;
-    }
-    if (!body.siteId) throw new BadRequestException('siteId가 필요합니다');
+    // ★ siteId 강제: 비-MASTER는 자기 사업장만 (falsy JWT siteId일 때 body.siteId fallthrough 차단)
+    const siteId = resolveSiteId(user, body.siteId);
+    if (!siteId) throw new BadRequestException('siteId가 필요합니다');
+    body.siteId = siteId;
     if (!body.periodType) throw new BadRequestException('periodType이 필요합니다');
     return this.dashboardService.createGoal(body);
   }

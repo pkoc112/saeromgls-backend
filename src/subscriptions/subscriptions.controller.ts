@@ -23,6 +23,7 @@ import {
   CurrentUser,
   JwtPayload,
 } from '../common/decorators/current-user.decorator';
+import { resolveSiteId } from '../common/utils/site-scope';
 import { StartTrialDto } from './dto/create-subscription.dto';
 import {
   ChangePlanDto,
@@ -87,8 +88,14 @@ export class SubscriptionsController {
   @ApiResponse({ status: 201, description: '체험 시작 성공' })
   @ApiResponse({ status: 400, description: '이미 구독/체험 중' })
   @ApiResponse({ status: 403, description: '이미 체험 사용 완료' })
-  startTrial(@Body() dto: StartTrialDto) {
-    return this.subscriptionsService.startTrial(dto.siteId, dto.planCode);
+  startTrial(@CurrentUser() user: JwtPayload, @Body() dto: StartTrialDto) {
+    // ★ IDOR 방어: ADMIN은 자기 사업장만 (resolveSiteId가 타 siteId 요청 차단),
+    //   MASTER만 dto.siteId 지정 가능. body.siteId를 그대로 신뢰하지 않음.
+    const siteId = resolveSiteId(user, dto.siteId);
+    if (!siteId) {
+      throw new BadRequestException('체험을 시작할 사업장을 지정해야 합니다');
+    }
+    return this.subscriptionsService.startTrial(siteId, dto.planCode);
   }
 
   // ──────────────────────────────────────────────

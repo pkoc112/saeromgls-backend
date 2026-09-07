@@ -39,7 +39,9 @@ export class HeatAlertsController {
       '작업자가 증상 체크 시 호출 (Sentry + Gmail + DB 저장). 인증 필요.',
   })
   @Throttle({ default: { limit: 30, ttl: 60_000 } })
-  create(@Body() dto: CreateHeatAlertDto) {
+  create(@CurrentUser() user: JwtPayload, @Body() dto: CreateHeatAlertDto) {
+    // ★ siteId는 JWT 우선 — 인증 작업자가 임의 siteId로 타 센터 알림을 위조/통계 왜곡하는 것 차단
+    if (user?.siteId) dto.siteId = user.siteId;
     return this.heatAlertsService.create(dto);
   }
 
@@ -65,6 +67,21 @@ export class HeatAlertsController {
   }
 
   /**
+   * 모바일: 센터 설정 조회 (날씨/WBGT 좌표 등) — JWT siteId 기준
+   * 미설정 시 기본 좌표(대구) 반환. 신규 센터의 지역별 날씨/폭염 판정에 사용.
+   */
+  @Get('mobile/site-config')
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth('jwt')
+  @ApiOperation({
+    summary: '센터 설정 조회 (날씨 좌표)',
+    description: 'JWT siteId의 TenantSettings에서 latitude/longitude 반환. 미설정 시 대구 기본.',
+  })
+  getSiteConfig(@CurrentUser() user: JwtPayload) {
+    return this.heatAlertsService.getSiteConfig(user?.siteId ?? null);
+  }
+
+  /**
    * 관리자: 시간별 체감온도 기록 조회 (KST 하루 단위)
    */
   @Get('admin/heat-records')
@@ -78,10 +95,13 @@ export class HeatAlertsController {
   findHourlyRecords(
     @CurrentUser() user: JwtPayload,
     @Query('siteId') querySiteId?: string,
+    @Query('from') from?: string,
+    @Query('to') to?: string,
     @Query('date') date?: string,
   ) {
     const siteId = resolveSiteId(user, querySiteId);
-    return this.heatAlertsService.findHourlyRecords(siteId, date);
+    // 하위호환: from/to 없이 date만 오면 그 날 하루 조회
+    return this.heatAlertsService.findHourlyRecords(siteId, from ?? date, to ?? date);
   }
 
   /**

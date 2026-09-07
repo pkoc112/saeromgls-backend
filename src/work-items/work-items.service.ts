@@ -36,7 +36,12 @@ export class WorkItemsService {
    * 모바일: 작업 시작 (생성)
    * 멱등성 키가 있으면 중복 생성 방지
    */
-  async create(dto: CreateWorkItemDto, ip?: string, userAgent?: string) {
+  async create(
+    dto: CreateWorkItemDto,
+    ip?: string,
+    userAgent?: string,
+    requester?: JwtPayload,
+  ) {
     // 멱등성 키 중복 확인 -- 네트워크 재시도 시 동일 작업이 중복 생성되지 않도록
     if (dto.idempotencyKey) {
       const existing = await this.prisma.workItem.findUnique({
@@ -70,6 +75,48 @@ export class WorkItemsService {
     });
     if (!classification || !classification.isActive) {
       throw new BadRequestException('유효하지 않은 분류입니다');
+    }
+
+    // ★ siteId 격리: 비-MASTER 호출자는 자기 사업장 자원만 사용 가능.
+    //   - 작업자/분류가 "다른 사업장" 소속이면 차단 (cross-tenant 위조 작업 주입 방지)
+    //   - 작업자 siteId=NULL(레거시 미배정)·분류 siteId=NULL(전역 공통)은 호환 허용
+    const callerSiteId =
+      requester && requester.role !== 'MASTER' ? requester.siteId : undefined;
+    if (callerSiteId) {
+      if (worker.siteId && worker.siteId !== callerSiteId) {
+        throw new ForbiddenException('다른 사업장의 작업자로 작업을 시작할 수 없습니다');
+      }
+      if (classification.siteId && classification.siteId !== callerSiteId) {
+        throw new ForbiddenException('다른 사업장의 분류로 작업을 시작할 수 없습니다');
+      }
+    }
+
+    // ★ 참여자 검증: 존재 확인(기존 누락) + 동일 사업장만 허용
+    if (dto.participantWorkerIds && dto.participantWorkerIds.length > 0) {
+      const uniqueIds = [
+        ...new Set(
+          dto.participantWorkerIds.filter((id) => id !== dto.startedByWorkerId),
+        ),
+      ];
+      if (uniqueIds.length > 0) {
+        const participants = await this.prisma.worker.findMany({
+          where: { id: { in: uniqueIds } },
+          select: { id: true, siteId: true },
+        });
+        if (participants.length !== uniqueIds.length) {
+          throw new BadRequestException('존재하지 않는 참여 작업자가 포함되어 있습니다');
+        }
+        if (callerSiteId) {
+          const foreign = participants.find(
+            (p) => p.siteId && p.siteId !== callerSiteId,
+          );
+          if (foreign) {
+            throw new ForbiddenException(
+              '다른 사업장의 작업자는 참여자로 추가할 수 없습니다',
+            );
+          }
+        }
+      }
     }
 
     // 트랜잭션으로 작업 + 배정 + 감사로그 동시 생성

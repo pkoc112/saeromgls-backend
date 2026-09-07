@@ -704,6 +704,45 @@ export class SubscriptionsService {
     return { processed: suspended.length, suspended };
   }
 
+  /**
+   * 결제 기간이 만료된 ACTIVE 구독을 PAST_DUE로 전이합니다.
+   * (기존엔 조회 시점(checkSubscriptionStatus)에만 전이돼 미납이 자동 진행되지 않던 문제 — 개통 분석 P1-5a)
+   *
+   * @returns 처리된 구독 수
+   */
+  async checkActivePastDue(): Promise<{
+    processed: number;
+    pastDue: string[];
+  }> {
+    const now = new Date();
+
+    const expiredActive = await this.prisma.subscription.findMany({
+      where: { status: 'ACTIVE', currentPeriodEnd: { lt: now } },
+      include: { site: { select: { name: true } } },
+    });
+
+    const pastDue: string[] = [];
+
+    for (const sub of expiredActive) {
+      try {
+        await this.transitionStatus(
+          sub.id,
+          'PAST_DUE',
+          '결제 기간 만료 (자동 처리)',
+        );
+        pastDue.push(`${sub.site?.name || sub.siteId} (${sub.id})`);
+      } catch (err) {
+        this.logger.error(`ACTIVE → PAST_DUE 처리 실패: ${sub.id} - ${err}`);
+      }
+    }
+
+    if (pastDue.length > 0) {
+      this.logger.log(`ACTIVE → PAST_DUE 일괄 처리 완료: ${pastDue.length}건`);
+    }
+
+    return { processed: pastDue.length, pastDue };
+  }
+
   // ──────────────────────────────────────────────
   // 감사 로그 기록 (구독 상태 전이)
   // ──────────────────────────────────────────────

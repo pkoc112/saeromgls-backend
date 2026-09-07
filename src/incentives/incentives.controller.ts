@@ -51,6 +51,27 @@ export class IncentivesController {
     return siteId;
   }
 
+  // ── 간단 인센티브 (정액형) — 4트랙 점수엔진 대체 ──
+  @Get('simple-payout')
+  @Roles('ADMIN')
+  @ApiOperation({
+    summary: '간단 인센티브 산출 (근무일×일당 + 출고CBM×요율 + 역할 월정액)',
+    description: '정책은 TenantSettings.incentive 에 저장. month=YYYY-MM(KST), 미지정 시 이번 달.',
+  })
+  @ApiResponse({ status: 200, description: '작업자별 인센티브 산출 결과' })
+  simplePayout(
+    @CurrentUser() user: JwtPayload,
+    @Query('siteId') querySiteId?: string,
+    @Query('month') month?: string,
+  ) {
+    const siteId = this.requireSiteId(user, querySiteId);
+    const m =
+      month && /^\d{4}-\d{2}$/.test(month)
+        ? month
+        : new Date(Date.now() + 9 * 3600_000).toISOString().slice(0, 7);
+    return this.incentivesService.computeSimplePayout(siteId, m);
+  }
+
   @Get('policies')
   @Roles('ADMIN')
   @ApiOperation({ summary: '인센티브 정책 목록 조회' })

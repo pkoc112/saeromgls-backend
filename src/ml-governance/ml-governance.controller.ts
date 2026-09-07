@@ -48,7 +48,9 @@ export class MlGovernanceController {
     @Param('id', ParseUUIDPipe) id: string,
     @CurrentUser() user: JwtPayload,
   ) {
-    return this.mlGovernanceService.approveDifficulty(id, user.sub);
+    // ★ IDOR 방어: 비-MASTER는 자기 사업장 예측 로그만 처리
+    const siteId = resolveSiteId(user);
+    return this.mlGovernanceService.approveDifficulty(id, user.sub, siteId);
   }
 
   @Post('difficulty/:id/reject')
@@ -63,7 +65,9 @@ export class MlGovernanceController {
     @Body() dto: RejectDifficultyDto,
     @CurrentUser() user: JwtPayload,
   ) {
-    return this.mlGovernanceService.rejectDifficulty(id, dto.reason, user.sub);
+    // ★ IDOR 방어: 비-MASTER는 자기 사업장 예측 로그만 처리
+    const siteId = resolveSiteId(user);
+    return this.mlGovernanceService.rejectDifficulty(id, dto.reason, user.sub, siteId);
   }
 
   @Get('difficulty/pending')

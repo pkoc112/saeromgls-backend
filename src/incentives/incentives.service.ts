@@ -72,6 +72,121 @@ export class IncentivesService {
   constructor(private readonly prisma: PrismaService) {}
 
   // ════════════════════════════════════════════════════════════════
+  // 간단 인센티브 (정액형) — 4트랙 점수엔진을 대체하는 투명 계산
+  //   작업자별 인센티브 = ① 근무일 × 일당  + ② 출고 CBM × 요율  + ③ 역할 월정액
+  //   정책은 TenantSettings JSON 의 `incentive` 키에 저장(별도 테이블 없음).
+  // ════════════════════════════════════════════════════════════════
+  async computeSimplePayout(siteId: string, month: string) {
+    // KST 월 범위 (절대 instant)
+    const start = new Date(`${month}-01T00:00:00+09:00`);
+    const end = new Date(start);
+    end.setMonth(end.getMonth() + 1);
+
+    // 정책 로드 (TenantSettings JSON)
+    let pol: {
+      enabled?: boolean;
+      dailyBase?: number;
+      cbmRate?: number;
+      roleAmounts?: Record<string, number>;
+      workerRoles?: Record<string, string>;
+      budgetCap?: number | null;
+    } = {};
+    const ts = await this.prisma.tenantSettings.findFirst({
+      where: { siteId },
+      select: { settings: true },
+    });
+    if (ts?.settings) {
+      try {
+        const p = JSON.parse(ts.settings);
+        if (p && typeof p.incentive === 'object' && p.incentive) pol = p.incentive;
+      } catch {
+        /* 파싱 실패 시 기본값 */
+      }
+    }
+    const dailyBase = Number(pol.dailyBase) || 0;
+    const cbmRate = Number(pol.cbmRate) || 0;
+    const roleAmounts = pol.roleAmounts || {};
+    const workerRoles = pol.workerRoles || {};
+    const budgetCap =
+      pol.budgetCap != null && Number(pol.budgetCap) > 0 ? Number(pol.budgetCap) : null;
+
+    // 사이트 작업자 (MASTER 제외)
+    const workers = await this.prisma.worker.findMany({
+      where: { siteId, role: { notIn: ['MASTER'] } },
+      select: { id: true, name: true, employeeCode: true },
+      orderBy: { name: 'asc' },
+    });
+
+    // 출고 집계: 작업자별 CBM + 근무일(ENDED 작업 distinct 날짜). 시작자 + 공동작업자.
+    const rows = await this.prisma.$queryRaw<
+      { worker_id: string; total_volume: number; work_days: bigint }[]
+    >`
+      WITH all_participations AS (
+        SELECT wi.started_by_worker_id as worker_id, wi.volume, wi.started_at
+        FROM work_items wi
+        WHERE wi.status = 'ENDED' AND wi.started_at >= ${start} AND wi.started_at < ${end}
+        UNION ALL
+        SELECT wa.worker_id, wi.volume, wi.started_at
+        FROM work_items wi
+        JOIN work_assignments wa ON wa.work_item_id = wi.id AND wa.role != 'STARTER'
+        WHERE wi.status = 'ENDED' AND wi.started_at >= ${start} AND wi.started_at < ${end}
+      )
+      SELECT ap.worker_id,
+             COALESCE(SUM(ap.volume), 0) as total_volume,
+             COUNT(DISTINCT ((ap.started_at AT TIME ZONE 'Asia/Seoul')::date)) as work_days
+      FROM all_participations ap
+      JOIN workers w ON w.id = ap.worker_id
+      WHERE (w.site_id = ${siteId} OR w.site_id IS NULL)
+      GROUP BY ap.worker_id
+    `;
+    const stat = new Map(
+      rows.map((r) => [
+        r.worker_id,
+        { volume: Number(r.total_volume), workDays: Number(r.work_days) },
+      ]),
+    );
+
+    // 작업자별 ①②③ 산출
+    const items = workers.map((w) => {
+      const s = stat.get(w.id) || { volume: 0, workDays: 0 };
+      const baseAmount = Math.round(s.workDays * dailyBase);
+      const outboundAmount = Math.round(s.volume * cbmRate);
+      const roleKey = workerRoles[w.id] || 'OUTBOUND';
+      const roleAmount = Math.round(Number(roleAmounts[roleKey]) || 0);
+      return {
+        workerId: w.id,
+        name: w.name,
+        employeeCode: w.employeeCode,
+        role: roleKey,
+        workDays: s.workDays,
+        volume: Math.round(s.volume * 10) / 10,
+        baseAmount,
+        outboundAmount,
+        roleAmount,
+        total: baseAmount + outboundAmount + roleAmount,
+      };
+    });
+
+    // 예산 상한 시 비례 축소
+    const rawTotal = items.reduce((a, i) => a + i.total, 0);
+    const scale = budgetCap && rawTotal > budgetCap ? budgetCap / rawTotal : 1;
+    const workersOut = items
+      .map((i) => ({ ...i, payout: Math.round(i.total * scale) }))
+      .sort((a, b) => b.payout - a.payout);
+
+    return {
+      month,
+      enabled: !!pol.enabled,
+      policy: { dailyBase, cbmRate, roleAmounts, budgetCap },
+      budgetCap,
+      rawTotal,
+      scaled: scale < 1,
+      totalPayout: workersOut.reduce((a, i) => a + i.payout, 0),
+      workers: workersOut,
+    };
+  }
+
+  // ════════════════════════════════════════════════════════════════
   // Policy Versions
   // ════════════════════════════════════════════════════════════════
 

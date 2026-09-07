@@ -911,6 +911,32 @@ export class CustomerOpsService {
     });
   }
 
+  /**
+   * 계정 잠금 해제 (MASTER 보안 콘솔)
+   * 잠금은 "최근 30분 내 실패 5건"으로 판정되므로, 해당 윈도우의 실패 로그인 이력을
+   * 정리하면 즉시 해제된다. 성공 기록은 보존한다.
+   */
+  async unlockAccount(workerId: string) {
+    const worker = await this.prisma.worker.findUnique({
+      where: { id: workerId },
+      select: { id: true, name: true, employeeCode: true },
+    });
+    if (!worker) {
+      throw new NotFoundException('작업자를 찾을 수 없습니다');
+    }
+    const cutoff = new Date(Date.now() - this.LOCKOUT_DURATION_MS);
+    const result = await this.prisma.loginHistory.deleteMany({
+      where: { workerId, success: false, createdAt: { gte: cutoff } },
+    });
+    return {
+      workerId: worker.id,
+      employeeCode: worker.employeeCode,
+      name: worker.name,
+      clearedAttempts: result.count,
+      unlocked: true,
+    };
+  }
+
   private async getLockedWorkers(siteId?: string) {
     const lockoutCutoff = new Date(Date.now() - this.LOCKOUT_DURATION_MS);
 

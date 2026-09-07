@@ -512,8 +512,68 @@ export class AuthService {
       data: { email, name, role, siteId, tokenHash, expiresAt, createdBy: inviter.sub },
     });
 
+    // 감사 로그 (DB) — 누가 어느 사업장에 어떤 역할을 초대했는지 추적 (개통 분석 P2)
+    try {
+      await this.prisma.adminActivityLog.create({
+        data: {
+          actorWorkerId: inviter.sub,
+          actionType: 'ADMIN_INVITE',
+          targetType: 'WORKER',
+          targetId: email,
+          metadata: JSON.stringify({ email, name, role, siteId }),
+        },
+      });
+    } catch (err) {
+      this.logger.warn(`초대 감사로그 기록 실패: ${err}`);
+    }
+
     const baseUrl = process.env.WEB_BASE_URL || 'https://sae-work.com';
     const inviteUrl = `${baseUrl}/accept-invite?token=${token}`;
+
+    // 초대 메일 자동 발송 (Resend) — 실패해도 inviteUrl은 반환되어 수동 전달 가능 (개통 분석 P1-7)
+    if (this.resend) {
+      try {
+        const roleKo = role === 'SUPERVISOR' ? '현장 반장' : '관리자';
+        const safeName = name.replace(/[<>&"]/g, (c) =>
+          ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' })[c] ?? c,
+        );
+        const { error } = await this.resend.emails.send({
+          from: `새롬 GLS <${this.fromEmail}>`,
+          to: [email],
+          subject: `[새롬 GLS] ${roleKo} 초대 — 계정 설정을 완료해주세요`,
+          html: `
+            <div style="font-family:-apple-system,sans-serif;max-width:560px;margin:0 auto;padding:24px;">
+              <h2 style="color:#0F172A;margin:0 0 8px;">새롬 GLS ${roleKo} 초대</h2>
+              <p style="color:#475569;font-size:14px;line-height:1.6;">
+                ${safeName}님, 새롬 GLS 작업현황 공유 시스템 <b>${roleKo}</b>로 초대되었습니다.<br>
+                아래 버튼을 눌러 비밀번호를 설정하면 계정이 활성화됩니다.
+              </p>
+              <a href="${inviteUrl}" style="display:inline-block;margin:18px 0;background:#2C6FB0;color:#fff;
+                text-decoration:none;padding:13px 26px;border-radius:10px;font-weight:700;font-size:15px;">
+                계정 설정하기
+              </a>
+              <p style="color:#94A3B8;font-size:12px;line-height:1.6;">
+                이 링크는 <b>72시간</b> 후 만료됩니다. 버튼이 안 되면 아래 주소를 복사해 접속하세요:<br>
+                <span style="color:#64748B;word-break:break-all;">${inviteUrl}</span>
+              </p>
+              <p style="color:#CBD5E1;font-size:11px;margin-top:24px;text-align:center;">
+                본 메일을 요청하지 않으셨다면 무시하셔도 됩니다. — 새롬 GLS
+              </p>
+            </div>
+          `,
+        });
+        if (error) {
+          this.logger.error(`초대 메일 발송 실패: ${JSON.stringify(error)}`);
+        } else {
+          this.logger.log(`초대 메일 발송 완료: ${maskEmail(email)}`);
+        }
+      } catch (err) {
+        this.logger.error(`초대 메일 예외: ${err}`);
+      }
+    } else {
+      this.logger.log(`[DEV] 초대 링크 → ${maskEmail(email)} (Resend 미설정, 미발송)`);
+    }
+
     this.logger.log(`Admin invite created: ${maskEmail(email)} (${role})`);
     return { inviteUrl, email, name, role, expiresAt };
   }

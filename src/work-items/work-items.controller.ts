@@ -37,6 +37,7 @@ import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { CurrentUser, JwtPayload } from '../common/decorators/current-user.decorator';
 import { resolveSiteId } from '../common/utils/site-scope';
+import { SubscriptionGateGuard } from '../common/guards/subscription-gate.guard';
 
 @Controller()
 export class WorkItemsController {
@@ -45,7 +46,7 @@ export class WorkItemsController {
   // ===================== Mobile Endpoints =====================
 
   @Post('mobile/work-items')
-  @UseGuards(JwtAuthGuard)
+  @UseGuards(JwtAuthGuard, SubscriptionGateGuard)
   @ApiTags('Mobile Work Items')
   @ApiOperation({
     summary: '작업 시작 (모바일)',
@@ -53,10 +54,15 @@ export class WorkItemsController {
   })
   @ApiResponse({ status: 201, description: '작업 생성 완료' })
   @ApiResponse({ status: 400, description: '유효하지 않은 요청' })
-  createWorkItem(@Body() dto: CreateWorkItemDto, @Req() req: Request) {
+  createWorkItem(
+    @Body() dto: CreateWorkItemDto,
+    @Req() req: Request,
+    @CurrentUser() user: JwtPayload,
+  ) {
     const ip = req.ip || req.socket.remoteAddress;
     const userAgent = req.headers['user-agent'];
-    return this.workItemsService.create(dto, ip, userAgent);
+    // ★ 호출자(태블릿/관리자 토큰)를 전달해 작업자/분류/참여자 siteId 격리 검증
+    return this.workItemsService.create(dto, ip, userAgent, user);
   }
 
   @Get('mobile/work-items')

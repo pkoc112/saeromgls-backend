@@ -137,9 +137,16 @@ export class BreakConfigsService {
       await this.validateNoOverlap(merged, id);
     }
 
+    // ★ 비-MASTER는 siteId 재배정 불가 — dto.siteId를 그대로 update에 넣지 않음
+    //   (타 사업장으로 설정이 넘어가 사라지는 cross-tenant 쓰기 방지)
+    const updateData: UpdateBreakConfigDto = { ...dto };
+    if (!requester || requester.role !== 'MASTER') {
+      delete updateData.siteId;
+    }
+
     const config = await this.prisma.breakConfig.update({
       where: { id },
-      data: dto,
+      data: updateData,
     });
 
     this.logger.log(`BreakConfig updated: ${config.label} (${config.id})`);

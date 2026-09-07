@@ -41,25 +41,55 @@ export class ClassificationsService {
       where.OR = [{ siteId }, { siteId: null }];
     }
 
-    return this.prisma.classification.findMany({
-      where,
-      select: {
-        id: true,
-        code: true,
-        displayName: true,
-        sortOrder: true,
-      },
-      orderBy: { sortOrder: 'asc' },
+    const [list, modes] = await Promise.all([
+      this.prisma.classification.findMany({
+        where,
+        select: {
+          id: true,
+          code: true,
+          displayName: true,
+          sortOrder: true,
+        },
+        orderBy: { sortOrder: 'asc' },
+      }),
+      this.getClassificationModes(siteId),
+    ]);
+
+    // 분류(카테고리)별 입력모드 부여 — 항목 코드 접두사(카테고리코드)로 매핑.
+    // 미설정 시: 쿠팡(COUPANG)은 기존 동작대로 '수량만', 그 외는 '둘 다'.
+    return list.map((c) => {
+      const categoryCode = c.code.includes('_') ? c.code.split('_')[0] : c.code;
+      const fallback = categoryCode === 'COUPANG' ? 'QUANTITY' : 'BOTH';
+      return { ...c, inputMode: modes[categoryCode] || fallback };
     });
+  }
+
+  /** 분류(카테고리)별 입력모드 맵 (TenantSettings JSON의 classificationModes). 없으면 {}. */
+  private async getClassificationModes(siteId?: string): Promise<Record<string, string>> {
+    if (!siteId) return {};
+    try {
+      const ts = await this.prisma.tenantSettings.findFirst({
+        where: { siteId },
+        select: { settings: true },
+      });
+      if (!ts?.settings) return {};
+      const parsed = JSON.parse(ts.settings);
+      return parsed?.classificationModes && typeof parsed.classificationModes === 'object'
+        ? (parsed.classificationModes as Record<string, string>)
+        : {};
+    } catch {
+      return {};
+    }
   }
 
   /**
    * 분류 생성 (관리자 전용, 사업장 배정)
    */
   async create(dto: CreateClassificationDto, siteId?: string) {
-    // 코드 중복 확인
-    const existing = await this.prisma.classification.findUnique({
-      where: { code: dto.code },
+    // 코드 중복 확인 — ★ 같은 사업장(siteId) 안에서만 검사 (전역 unique 아님).
+    //   다른 센터가 같은 code(COUPANG 등)를 쓰는 건 허용.
+    const existing = await this.prisma.classification.findFirst({
+      where: { code: dto.code, siteId: siteId ?? null },
     });
 
     if (existing) {
@@ -108,10 +138,10 @@ export class ClassificationsService {
       }
     }
 
-    // 코드 변경 시 중복 확인
+    // 코드 변경 시 중복 확인 — ★ 같은 사업장(existing.siteId) 안에서만, 자기 자신 제외
     if (dto.code && dto.code !== existing.code) {
-      const duplicate = await this.prisma.classification.findUnique({
-        where: { code: dto.code },
+      const duplicate = await this.prisma.classification.findFirst({
+        where: { code: dto.code, siteId: existing.siteId, id: { not: id } },
       });
       if (duplicate) {
         throw new ConflictException(`분류 코드 '${dto.code}'은(는) 이미 존재합니다`);

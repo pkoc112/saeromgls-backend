@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { Prisma } from '@prisma/client';
 import { CreateIncentivePolicyDto } from './dto/create-incentive-policy.dto';
@@ -264,8 +264,22 @@ export class PerformanceService {
     });
   }
 
-  async updateIncentivePolicy(id: string, dto: UpdateIncentivePolicyDto) {
-    const { siteId, ...updateData } = dto;
+  async updateIncentivePolicy(
+    id: string,
+    dto: UpdateIncentivePolicyDto,
+    siteId?: string,
+  ) {
+    // ★ IDOR 방어: 정책 소유권 검증 (다른 사업장 정책이면 없는 것처럼 차단)
+    const existing = await this.prisma.incentivePolicy.findUnique({
+      where: { id },
+    });
+    if (!existing) {
+      throw new NotFoundException('인센티브 정책을 찾을 수 없습니다');
+    }
+    if (siteId && existing.siteId !== siteId) {
+      throw new NotFoundException('인센티브 정책을 찾을 수 없습니다');
+    }
+    const { siteId: _ignore, ...updateData } = dto;
     return this.prisma.incentivePolicy.update({
       where: { id },
       data: updateData,

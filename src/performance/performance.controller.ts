@@ -90,10 +90,10 @@ export class PerformanceController {
     @Body() dto: CreateIncentivePolicyDto,
     @CurrentUser() user: JwtPayload,
   ) {
-    // MASTER가 아닌 경우 자기 사업장만
-    if (user?.role !== 'MASTER' && user?.siteId) {
-      dto.siteId = user.siteId;
-    }
+    // ★ siteId 강제: 비-MASTER는 자기 사업장만 (falsy JWT siteId fallthrough 차단)
+    const siteId = resolveSiteId(user, dto.siteId);
+    if (!siteId) throw new BadRequestException('siteId가 필요합니다');
+    dto.siteId = siteId;
     return this.performanceService.createIncentivePolicy(dto);
   }
 
@@ -103,8 +103,11 @@ export class PerformanceController {
   updateIncentivePolicy(
     @Param('id') id: string,
     @Body() dto: UpdateIncentivePolicyDto,
+    @CurrentUser() user: JwtPayload,
   ) {
-    return this.performanceService.updateIncentivePolicy(id, dto);
+    // ★ IDOR 방어: 비-MASTER는 자기 사업장 정책만 수정
+    const siteId = resolveSiteId(user);
+    return this.performanceService.updateIncentivePolicy(id, dto, siteId);
   }
 
   private validateDateRange(from: string, to: string) {

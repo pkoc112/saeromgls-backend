@@ -139,7 +139,9 @@ model Worker {
 /// 분류 - 작업 분류 코드
 model Classification {
   id          String   @id @default(uuid())
-  code        String   @unique
+  // ★ 멀티테넌트: code는 전역 유일이 아니라 (siteId, code) 복합 유일.
+  //    공통 거래처(COUPANG 등)를 여러 센터가 각자 만들 수 있어야 2번째 센터 개통이 막히지 않음.
+  code        String
   displayName String   @map("display_name")
   sortOrder   Int      @default(0) @map("sort_order")
   isActive    Boolean  @default(true) @map("is_active")
@@ -149,6 +151,7 @@ model Classification {
   site      Site?      @relation(fields: [siteId], references: [id])
   workItems WorkItem[]
 
+  @@unique([siteId, code])
   @@index([siteId])
   @@map("classifications")
 }

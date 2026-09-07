@@ -57,18 +57,24 @@ async function main() {
     { code: 'CVS', displayName: 'CVS (편의점)', sortOrder: 3 },
   ];
 
+  // 전역(siteId=null) 분류 — 복합키(siteId,code)라 null siteId는 findFirst+create로 idempotent 처리
   for (const cls of classifications) {
-    const created = await prisma.classification.upsert({
-      where: { code: cls.code },
-      update: {},
-      create: {
-        code: cls.code,
-        displayName: cls.displayName,
-        sortOrder: cls.sortOrder,
-        isActive: true,
-      },
+    const exists = await prisma.classification.findFirst({
+      where: { code: cls.code, siteId: null },
     });
-    console.log(`  Created classification: ${created.code} - ${created.displayName}`);
+    if (!exists) {
+      const created = await prisma.classification.create({
+        data: {
+          code: cls.code,
+          displayName: cls.displayName,
+          sortOrder: cls.sortOrder,
+          isActive: true,
+        },
+      });
+      console.log(`  Created classification: ${created.code} - ${created.displayName}`);
+    } else {
+      console.log(`  Classification exists: ${exists.code}`);
+    }
   }
 
   console.log('\nSeed completed successfully!');

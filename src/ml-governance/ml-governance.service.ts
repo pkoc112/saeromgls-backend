@@ -36,12 +36,21 @@ export class MlGovernanceService {
   /**
    * AI 난이도 추천 승인 — baseline_snapshot 생성
    */
-  async approveDifficulty(predictionLogId: string, approvedBy: string) {
+  async approveDifficulty(
+    predictionLogId: string,
+    approvedBy: string,
+    siteId?: string,
+  ) {
     const log = await this.prisma.predictionLog.findUnique({
       where: { id: predictionLogId },
     });
 
     if (!log) {
+      throw new NotFoundException('예측 로그를 찾을 수 없습니다');
+    }
+
+    // ★ IDOR 방어: 다른 사업장 예측 로그면 존재하지 않는 것처럼 차단
+    if (siteId && log.siteId !== siteId) {
       throw new NotFoundException('예측 로그를 찾을 수 없습니다');
     }
 
@@ -89,12 +98,22 @@ export class MlGovernanceService {
   /**
    * AI 난이도 추천 거절
    */
-  async rejectDifficulty(predictionLogId: string, reason: string, rejectedBy: string) {
+  async rejectDifficulty(
+    predictionLogId: string,
+    reason: string,
+    rejectedBy: string,
+    siteId?: string,
+  ) {
     const log = await this.prisma.predictionLog.findUnique({
       where: { id: predictionLogId },
     });
 
     if (!log) {
+      throw new NotFoundException('예측 로그를 찾을 수 없습니다');
+    }
+
+    // ★ IDOR 방어: 다른 사업장 예측 로그면 존재하지 않는 것처럼 차단
+    if (siteId && log.siteId !== siteId) {
       throw new NotFoundException('예측 로그를 찾을 수 없습니다');
     }
 

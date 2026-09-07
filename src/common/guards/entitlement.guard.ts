@@ -9,6 +9,7 @@ import { Reflector } from '@nestjs/core';
 import { PrismaService } from '../../prisma/prisma.service';
 import { FEATURE_KEY } from '../decorators/feature.decorator';
 import { JwtPayload } from '../decorators/current-user.decorator';
+import { resolveBillingSiteId } from '../utils/billing-site';
 
 /**
  * 플랜별 기능 제한 가드
@@ -57,9 +58,12 @@ export class EntitlementGuard implements CanActivate {
       throw new ForbiddenException('소속 사업장이 없습니다');
     }
 
+    // ★ 구독은 루트(청구) 사이트 기준 — 하위 사업장은 부모 구독을 상속
+    const billingSiteId = await resolveBillingSiteId(this.prisma, user.siteId);
+
     // 최신 구독 조회
     const subscription = await this.prisma.subscription.findFirst({
-      where: { siteId: user.siteId },
+      where: { siteId: billingSiteId },
       include: { plan: true },
       orderBy: { createdAt: 'desc' },
     });

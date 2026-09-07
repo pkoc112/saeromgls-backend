@@ -55,10 +55,12 @@ export class WorkersController {
     @Query('limit') limit?: number,
     @Query('status') status?: string,
     @Query('siteId') querySiteId?: string,
+    @Query('role') role?: string,
   ) {
     // MASTER: querySiteId 지정 가능 (없으면 전체), ADMIN/SUPERVISOR: 자기 사업장만
     const siteId = resolveSiteId(user, querySiteId);
-    return this.workersService.findAll({ page, limit, status, siteId });
+    // role 필터는 service에서 호출자 역할로 권한 게이트 (관리자 조회는 MASTER/ADMIN만)
+    return this.workersService.findAll({ page, limit, status, siteId, role, callerRole: user.role });
   }
 
   @Post('admin/workers/migrate-tracks-v3')
@@ -116,9 +118,11 @@ export class WorkersController {
       throw new ForbiddenException('사업장 변경은 마스터 관리자만 가능합니다');
     }
     // 대상 작업자가 자기 사업장 소속인지 확인
+    // ★ siteId=NULL(레거시 미배정) 작업자는 비-MASTER가 손대지 못하도록 차단
+    //   (`target.siteId &&` 단락 제거 — NULL 통과 시 계정탈취/PII변경 가능)
     if (user.role !== 'MASTER') {
       const target = await this.workersService.findOne(id);
-      if (target.siteId && target.siteId !== user.siteId) {
+      if (target.siteId !== user.siteId) {
         throw new ForbiddenException('다른 사업장의 작업자를 수정할 수 없습니다');
       }
     }
@@ -138,9 +142,10 @@ export class WorkersController {
     @Param('id', ParseUUIDPipe) id: string,
   ) {
     // 대상 작업자가 자기 사업장 소속인지 확인
+    // ★ siteId=NULL(레거시 미배정) 작업자는 비-MASTER가 삭제하지 못하도록 차단
     if (user.role !== 'MASTER') {
       const target = await this.workersService.findOne(id);
-      if (target.siteId && target.siteId !== user.siteId) {
+      if (target.siteId !== user.siteId) {
         throw new ForbiddenException('다른 사업장의 작업자를 삭제할 수 없습니다');
       }
     }

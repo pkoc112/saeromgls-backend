@@ -4,6 +4,7 @@ import * as Sentry from '@sentry/node';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { IncentivesService } from '../incentives/incentives.service';
+import { InvoicesService } from '../invoices/invoices.service';
 
 /**
  * Vercel Cron 핸들러 — 외부에서 주기적으로 호출되어 자동 작업 수행
@@ -25,6 +26,7 @@ export class CronController {
     private readonly subscriptionsService: SubscriptionsService,
     private readonly prisma: PrismaService,
     private readonly incentivesService: IncentivesService,
+    private readonly invoicesService: InvoicesService,
   ) {}
 
   private assertCronAuth(authHeader?: string): void {
@@ -99,21 +101,42 @@ export class CronController {
 
   @Get('subscription-check')
   @ApiOperation({
-    summary: '구독 자동 전이 체크 (Trial 만료, Past_Due → Suspended)',
+    summary: '구독 자동 전이 체크 (Trial→Expired, Active→PastDue, PastDue→Suspended, 인보이스 연체)',
   })
   async subscriptionCheck(@Headers('authorization') auth?: string) {
     this.assertCronAuth(auth);
     return this.runCronJob('subscription-check', async () => {
       const trialResult = await this.subscriptionsService.checkTrialExpirations();
+      // P1-5a: 결제 기간 만료된 ACTIVE → PAST_DUE (기존엔 조회 시점에만 전이돼 미납 자동진행 안 됨)
+      const activePastDueResult = await this.subscriptionsService.checkActivePastDue();
       const pastDueResult = await this.subscriptionsService.checkPastDueSuspensions();
+      // P1-5b: 납기 지난 발행(ISSUED) 인보이스 → OVERDUE
+      const overdueResult = await this.invoicesService.checkOverdue();
       this.logger.log(
-        `Subscription cron: trial=${trialResult.processed}, suspended=${pastDueResult.processed}`,
+        `Subscription cron: trial=${trialResult.processed}, activePastDue=${activePastDueResult.processed}, suspended=${pastDueResult.processed}, overdue=${overdueResult.markedOverdue}`,
       );
       return {
         timestamp: new Date().toISOString(),
         trialExpired: trialResult,
+        activePastDue: activePastDueResult,
         pastDueSuspended: pastDueResult,
+        invoicesOverdue: overdueResult,
       };
+    }, { idempotent: true });
+  }
+
+  @Get('invoice-generate')
+  @ApiOperation({
+    summary: '매월 1일 — ACTIVE 구독 대상 월간 인보이스 자동 생성 (P1-5b)',
+  })
+  async invoiceGenerate(@Headers('authorization') auth?: string) {
+    this.assertCronAuth(auth);
+    return this.runCronJob('invoice-generate', async () => {
+      const result = await this.invoicesService.generateMonthlyInvoices();
+      this.logger.log(
+        `Invoice cron: month=${result.monthLabel}, generated=${result.generated}, skipped=${result.skipped}`,
+      );
+      return result;
     }, { idempotent: true });
   }
 
@@ -123,134 +146,187 @@ export class CronController {
   })
   async dataRetentionPurge(@Headers('authorization') auth?: string) {
     this.assertCronAuth(auth);
-    const now = new Date();
-    const purgeStats = {
-      timestamp: now.toISOString(),
-      workItemsDeleted: 0,
-      auditLogsDeleted: 0,
-      adminActivityLogsDeleted: 0,
-      loginHistoryDeleted: 0,
-      refreshTokensDeleted: 0,
-      piiFinalizedCount: 0,
-      heatCheckAlertsDeleted: 0,
-      heatHourlyRecordsDeleted: 0,
-      mobileDiagnosticsDeleted: 0,
-      verificationCodesDeleted: 0,
-    };
+    return this.runCronJob(
+      'data-retention-purge',
+      async () => {
+        const now = new Date();
+        const purgeStats = {
+          timestamp: now.toISOString(),
+          workItemsDeleted: 0,
+          auditLogsDeleted: 0,
+          adminActivityLogsDeleted: 0,
+          loginHistoryDeleted: 0,
+          refreshTokensDeleted: 0,
+          piiFinalizedCount: 0,
+          heatCheckAlertsDeleted: 0,
+          heatHourlyRecordsDeleted: 0,
+          mobileDiagnosticsDeleted: 0,
+          verificationCodesDeleted: 0,
+          errors: [] as string[],
+        };
 
-    try {
-      // 작업 기록 3년 경과
-      const threeYearsAgo = new Date(now);
-      threeYearsAgo.setFullYear(threeYearsAgo.getFullYear() - 3);
-      const oldWorkItems = await this.prisma.workItem.findMany({
-        where: { startedAt: { lt: threeYearsAgo } },
-        select: { id: true },
-      });
-      const ids = oldWorkItems.map((w) => w.id);
-      if (ids.length > 0) {
-        await this.prisma.$transaction(async (tx) => {
-          await tx.workAssignment.deleteMany({ where: { workItemId: { in: ids } } });
-          await tx.auditLog.deleteMany({ where: { workItemId: { in: ids } } });
-          const r = await tx.workItem.deleteMany({ where: { id: { in: ids } } });
-          purgeStats.workItemsDeleted = r.count;
+        // ★ 단계별 격리: 한 단계 실패(스키마 드리프트 P2021/타임아웃)가 나머지 파기를
+        //   막지 않도록 각 step을 독립 try/catch로 감싸고 errors[]에 누적 + step별 Sentry emit.
+        const runStep = async (label: string, fn: () => Promise<void>) => {
+          try {
+            await fn();
+          } catch (e) {
+            const msg = e instanceof Error ? e.message : String(e);
+            purgeStats.errors.push(`${label}: ${msg}`);
+            this.logger.error(`[purge] ${label} 실패: ${msg}`);
+            try {
+              Sentry.captureException(e, {
+                level: 'error',
+                tags: { cron_job: 'data-retention-purge', step: label },
+              });
+            } catch {
+              /* Sentry 미설정 무시 */
+            }
+          }
+        };
+
+        const threeYearsAgo = new Date(now);
+        threeYearsAgo.setFullYear(threeYearsAgo.getFullYear() - 3);
+        const oneYearAgo = new Date(now);
+        oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
+        const sevenDaysAgo = new Date(now);
+        sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
+        const ninetyDaysAgo = new Date(now);
+        ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
+
+        // 작업 기록 3년 — id 청크로 배치 삭제(대량 IN/함수 타임아웃 방지) +
+        // InspectionRecord(필수참조=Restrict) 선삭제로 FK 롤백 영구실패 방지(함정 #18).
+        // WorkAssignment(Cascade)·AuditLog(SetNull)은 DB가 처리하나 명시 정리.
+        await runStep('workItems', async () => {
+          const oldWorkItems = await this.prisma.workItem.findMany({
+            where: { startedAt: { lt: threeYearsAgo } },
+            select: { id: true },
+          });
+          const allIds = oldWorkItems.map((w) => w.id);
+          const CHUNK = 1000;
+          for (let i = 0; i < allIds.length; i += CHUNK) {
+            const ids = allIds.slice(i, i + CHUNK);
+            await this.prisma.$transaction(async (tx) => {
+              await tx.inspectionRecord.deleteMany({
+                where: { sourceWorkItemId: { in: ids } },
+              });
+              await tx.workAssignment.deleteMany({
+                where: { workItemId: { in: ids } },
+              });
+              await tx.auditLog.deleteMany({ where: { workItemId: { in: ids } } });
+              const r = await tx.workItem.deleteMany({ where: { id: { in: ids } } });
+              purgeStats.workItemsDeleted += r.count;
+            });
+          }
         });
-      }
 
-      // 감사 로그 1년 경과
-      const oneYearAgo = new Date(now);
-      oneYearAgo.setFullYear(oneYearAgo.getFullYear() - 1);
-      const auditResult = await this.prisma.auditLog.deleteMany({
-        where: { createdAt: { lt: oneYearAgo } },
-      });
-      purgeStats.auditLogsDeleted = auditResult.count;
-      const adminActResult = await this.prisma.adminActivityLog.deleteMany({
-        where: { createdAt: { lt: oneYearAgo } },
-      });
-      purgeStats.adminActivityLogsDeleted = adminActResult.count;
-      const loginResult = await this.prisma.loginHistory.deleteMany({
-        where: { createdAt: { lt: oneYearAgo } },
-      });
-      purgeStats.loginHistoryDeleted = loginResult.count;
-
-      // 만료된 refresh token + revoke된 지 7일 지난 토큰 (A-Z 리뷰 P2-6: 906건 누적 발견)
-      const sevenDaysAgo = new Date(now);
-      sevenDaysAgo.setDate(sevenDaysAgo.getDate() - 7);
-      const refreshResult = await this.prisma.refreshToken.deleteMany({
-        where: {
-          OR: [
-            { expiresAt: { lt: now } },
-            { revokedAt: { lt: sevenDaysAgo } },
-          ],
-        },
-      });
-      purgeStats.refreshTokensDeleted = refreshResult.count;
-
-      // 폭염 자가체크 알림 3년 (산업안전보건법) — A-Z 리뷰 P2-5
-      const heatResult = await this.prisma.heatCheckAlert.deleteMany({
-        where: { createdAt: { lt: threeYearsAgo } },
-      });
-      purgeStats.heatCheckAlertsDeleted = heatResult.count;
-
-      // 시간별 체감온도 기록 3년 (HeatCheckAlert와 동일 보관 기준)
-      const heatHourlyResult = await this.prisma.heatHourlyRecord.deleteMany({
-        where: { createdAt: { lt: threeYearsAgo } },
-      });
-      purgeStats.heatHourlyRecordsDeleted = heatHourlyResult.count;
-
-      // 모바일 진단 로그 90일 (단기 디버깅용) — A-Z 리뷰 P2-5
-      const ninetyDaysAgoForDiag = new Date(now);
-      ninetyDaysAgoForDiag.setDate(ninetyDaysAgoForDiag.getDate() - 90);
-      const diagResult = await this.prisma.mobileDiagnostic.deleteMany({
-        where: { createdAt: { lt: ninetyDaysAgoForDiag } },
-      });
-      purgeStats.mobileDiagnosticsDeleted = diagResult.count;
-
-      // 만료된 이메일 인증코드 (10분 TTL이지만 미사용분 누적 가능) — A-Z 리뷰 P2-5
-      const vcResult = await this.prisma.verificationCode.deleteMany({
-        where: { expiresAt: { lt: now } },
-      });
-      purgeStats.verificationCodesDeleted = vcResult.count;
-
-      // 90일 경과 INACTIVE 계정 PII 최종 삭제
-      const ninetyDaysAgo = new Date(now);
-      ninetyDaysAgo.setDate(ninetyDaysAgo.getDate() - 90);
-      const inactiveOld = await this.prisma.worker.findMany({
-        where: { status: 'INACTIVE', updatedAt: { lt: ninetyDaysAgo } },
-        select: { id: true, name: true },
-      });
-      for (const w of inactiveOld) {
-        if (w.name && !w.name.startsWith('탈퇴회원-')) {
-          const shortHash = w.id.slice(0, 8);
-          await this.prisma.worker.update({
-            where: { id: w.id },
-            data: {
-              name: `탈퇴회원-${shortHash}`,
-              phone: null,
-              passwordHash: null,
-              pin: '',
+        await runStep('auditLogs', async () => {
+          const r = await this.prisma.auditLog.deleteMany({
+            where: { createdAt: { lt: oneYearAgo } },
+          });
+          purgeStats.auditLogsDeleted = r.count;
+        });
+        await runStep('adminActivityLogs', async () => {
+          const r = await this.prisma.adminActivityLog.deleteMany({
+            where: { createdAt: { lt: oneYearAgo } },
+          });
+          purgeStats.adminActivityLogsDeleted = r.count;
+        });
+        await runStep('loginHistory', async () => {
+          const r = await this.prisma.loginHistory.deleteMany({
+            where: { createdAt: { lt: oneYearAgo } },
+          });
+          purgeStats.loginHistoryDeleted = r.count;
+        });
+        await runStep('refreshTokens', async () => {
+          const r = await this.prisma.refreshToken.deleteMany({
+            where: {
+              OR: [{ expiresAt: { lt: now } }, { revokedAt: { lt: sevenDaysAgo } }],
             },
           });
-          purgeStats.piiFinalizedCount++;
+          purgeStats.refreshTokensDeleted = r.count;
+        });
+        await runStep('heatCheckAlerts', async () => {
+          const r = await this.prisma.heatCheckAlert.deleteMany({
+            where: { createdAt: { lt: threeYearsAgo } },
+          });
+          purgeStats.heatCheckAlertsDeleted = r.count;
+        });
+        await runStep('heatHourlyRecords', async () => {
+          const r = await this.prisma.heatHourlyRecord.deleteMany({
+            where: { createdAt: { lt: threeYearsAgo } },
+          });
+          purgeStats.heatHourlyRecordsDeleted = r.count;
+        });
+        await runStep('mobileDiagnostics', async () => {
+          const r = await this.prisma.mobileDiagnostic.deleteMany({
+            where: { createdAt: { lt: ninetyDaysAgo } },
+          });
+          purgeStats.mobileDiagnosticsDeleted = r.count;
+        });
+        await runStep('verificationCodes', async () => {
+          const r = await this.prisma.verificationCode.deleteMany({
+            where: { expiresAt: { lt: now } },
+          });
+          purgeStats.verificationCodesDeleted = r.count;
+        });
+
+        // 90일 경과 INACTIVE 계정 PII 최종 익명화 — 건별 try/catch로 한 건 실패가
+        // 나머지 센터 탈퇴자 익명화를 막지 않도록 격리.
+        await runStep('piiFinalize', async () => {
+          const inactiveOld = await this.prisma.worker.findMany({
+            where: { status: 'INACTIVE', updatedAt: { lt: ninetyDaysAgo } },
+            select: { id: true, name: true },
+          });
+          for (const w of inactiveOld) {
+            if (w.name && !w.name.startsWith('탈퇴회원-')) {
+              try {
+                const shortHash = w.id.slice(0, 8);
+                await this.prisma.worker.update({
+                  where: { id: w.id },
+                  data: {
+                    name: `탈퇴회원-${shortHash}`,
+                    phone: null,
+                    passwordHash: null,
+                    pin: '',
+                  },
+                });
+                purgeStats.piiFinalizedCount++;
+              } catch (e) {
+                const msg = e instanceof Error ? e.message : String(e);
+                purgeStats.errors.push(`piiFinalize(${w.id.slice(0, 8)}): ${msg}`);
+                this.logger.error(`[purge] PII 익명화 실패 ${w.id}: ${msg}`);
+              }
+            }
+          }
+        });
+
+        // 감사 기록 (errors 포함)
+        await runStep('audit-record', async () => {
+          await this.prisma.adminActivityLog.create({
+            data: {
+              actorWorkerId: 'SYSTEM',
+              actionType: 'DATA_RETENTION_PURGE',
+              targetType: 'CRON',
+              targetId: 'monthly-purge',
+              metadata: JSON.stringify(purgeStats),
+            },
+          });
+        });
+
+        if (purgeStats.errors.length > 0) {
+          this.logger.error(
+            `Data retention purge completed WITH ${purgeStats.errors.length} errors: ${JSON.stringify(purgeStats.errors)}`,
+          );
+        } else {
+          this.logger.log(
+            `Data retention purge completed: ${JSON.stringify(purgeStats)}`,
+          );
         }
-      }
-
-      // 감사 기록
-      await this.prisma.adminActivityLog.create({
-        data: {
-          actorWorkerId: 'SYSTEM',
-          actionType: 'DATA_RETENTION_PURGE',
-          targetType: 'CRON',
-          targetId: 'monthly-purge',
-          metadata: JSON.stringify(purgeStats),
-        },
-      });
-
-      this.logger.log(`Data retention purge completed: ${JSON.stringify(purgeStats)}`);
-      return purgeStats;
-    } catch (err) {
-      this.logger.error(`Data retention purge failed: ${err}`);
-      throw err;
-    }
+        return purgeStats;
+      },
+      { idempotent: true },
+    );
   }
 
   @Get('incentive-monthly-shadow')

@@ -26,6 +26,71 @@ export class HeatAlertsService {
     this.notifyEmail = process.env.HEAT_ALERT_EMAIL || 'k20418852@gmail.com';
   }
 
+  /** 날씨/WBGT 기본 좌표 (대구 동구 물류센터) — 센터 미설정 시 폴백 */
+  private readonly DEFAULT_LAT = 35.92;
+  private readonly DEFAULT_LON = 128.66;
+  /** 좌표 미설정 폴백 경고를 이미 emit한 사업장 (Sentry 스팸 방지, 콜드스타트 시 리셋) */
+  private readonly warnedFallbackSites = new Set<string>();
+
+  /**
+   * 모바일용 센터 설정 조회 (개통 분석 P0-2b):
+   * 해당 사업장 TenantSettings JSON 의 latitude/longitude 를 반환.
+   * 미설정/파싱 실패 시 대구 기본 좌표로 폴백 → 신규 센터가 자기 지역 날씨로 폭염 판정.
+   */
+  async getSiteConfig(siteId: string | null) {
+    let latitude = this.DEFAULT_LAT;
+    let longitude = this.DEFAULT_LON;
+    // 화면 keep-on 운영시간 — 미설정 시 06~19시(기존 대구 동작 유지)
+    let workStartHour = 6;
+    let workEndHour = 19;
+    let coordsResolved = false;
+    if (siteId) {
+      try {
+        const ts = await this.prisma.tenantSettings.findFirst({
+          where: { siteId },
+          select: { settings: true },
+        });
+        if (ts?.settings) {
+          const p = JSON.parse(ts.settings);
+          const lat = Number(p?.latitude);
+          const lon = Number(p?.longitude);
+          if (Number.isFinite(lat) && Number.isFinite(lon) && lat !== 0 && lon !== 0) {
+            latitude = lat;
+            longitude = lon;
+            coordsResolved = true;
+          }
+          const ws = Number(p?.workStartHour);
+          const we = Number(p?.workEndHour);
+          if (Number.isInteger(ws) && ws >= 0 && ws <= 23) workStartHour = ws;
+          if (Number.isInteger(we) && we >= 1 && we <= 24 && we > workStartHour) workEndHour = we;
+        }
+      } catch (err) {
+        this.logger.warn(`site-config 조회 실패(site ${siteId}) — 기본값 폴백: ${err}`);
+      }
+
+      // ★ 좌표 미설정 폴백 경고: 신규(타 지역) 센터가 조용히 대구 날씨로 폭염을 판정하는
+      //   산업안전 사고를 방지. 로그는 매번, Sentry는 사업장당 1회만 emit.
+      if (!coordsResolved) {
+        this.logger.warn(
+          `[heat] site ${siteId} 좌표 미설정 → 대구 기본 좌표(${this.DEFAULT_LAT},${this.DEFAULT_LON})로 폴백. ` +
+            `해당 센터의 온열질환 판정이 실제 지역과 다를 수 있음 — 설정에서 위경도를 입력하세요.`,
+        );
+        if (!this.warnedFallbackSites.has(siteId)) {
+          this.warnedFallbackSites.add(siteId);
+          try {
+            Sentry.captureMessage(
+              `heat-config: site ${siteId} 좌표 미설정 → 대구 좌표 폴백 (지역 불일치 위험)`,
+              'warning',
+            );
+          } catch {
+            /* Sentry 미초기화 시 무시 */
+          }
+        }
+      }
+    }
+    return { latitude, longitude, workStartHour, workEndHour, coordsResolved };
+  }
+
   /** 증상 ID → 한글 라벨 매핑 */
   private symptomLabel(id: string): string {
     switch (id) {
@@ -42,6 +107,32 @@ export class HeatAlertsService {
 
   private resultLabel(result: 'symptoms' | 'rest'): string {
     return result === 'rest' ? '🛌 작업자가 휴식 선택' : '⚠️ 그래도 작업 진행';
+  }
+
+  /**
+   * 폭염 알림 수신자 결정 (개통 분석 P0-2):
+   * 해당 사업장 TenantSettings JSON 의 alertEmail 을 우선 사용하고,
+   * 없으면 전역 운영자 이메일(HEAT_ALERT_EMAIL)로 폴백한다.
+   * → 멀티센터에서 각 센터 알림이 그 센터 담당자에게 가도록.
+   */
+  private async resolveRecipient(siteId: string | null): Promise<string> {
+    if (siteId) {
+      try {
+        const ts = await this.prisma.tenantSettings.findFirst({
+          where: { siteId },
+          select: { settings: true },
+        });
+        if (ts?.settings) {
+          const parsed = JSON.parse(ts.settings);
+          const email =
+            typeof parsed?.alertEmail === 'string' ? parsed.alertEmail.trim() : '';
+          if (email && email.includes('@')) return email;
+        }
+      } catch (err) {
+        this.logger.warn(`alertEmail 조회 실패(site ${siteId}) — 전역 폴백: ${err}`);
+      }
+    }
+    return this.notifyEmail;
   }
 
   /**
@@ -99,7 +190,8 @@ export class HeatAlertsService {
       this.logger.warn(`Sentry capture 실패: ${err}`);
     }
 
-    // 3) Gmail 발송 (fire-and-forget)
+    // 3) Gmail 발송 (fire-and-forget) — 센터별 수신자로 라우팅
+    const recipient = await this.resolveRecipient(dto.siteId ?? null);
     if (this.resend) {
       const subject = `[새롬GLS] 폭염 자가체크 알림 — ${dto.workerName} (${slotKo})`;
       const html = `
@@ -155,7 +247,7 @@ export class HeatAlertsService {
       try {
         await this.resend.emails.send({
           from: this.fromEmail,
-          to: this.notifyEmail,
+          to: recipient,
           subject,
           html,
         });
@@ -213,27 +305,44 @@ export class HeatAlertsService {
   }
 
   /**
-   * 시간별 체감온도 기록 조회 (관리자 웹 — KST 하루 단위)
-   * @param dateStr 'YYYY-MM-DD' (KST). 미지정 시 KST 오늘.
+   * 시간별 체감온도 기록 조회 (관리자 웹 — KST 기간 단위)
+   * @param fromStr 'YYYY-MM-DD' (KST) 시작일. 미지정 시 KST 오늘.
+   * @param toStr   'YYYY-MM-DD' (KST) 종료일. 미지정 시 fromStr.
+   * 기간은 [from 00:00, to 24:00) 으로 양끝 포함. 과도한 범위는 92일로 제한.
    */
-  async findHourlyRecords(siteId: string | null | undefined, dateStr?: string) {
-    const kstNow = new Date(Date.now() + 9 * 3600_000);
-    const ymd =
-      dateStr && /^\d{4}-\d{2}-\d{2}$/.test(dateStr)
-        ? dateStr
-        : kstNow.toISOString().slice(0, 10);
-    const start = new Date(`${ymd}T00:00:00+09:00`);
-    const end = new Date(start.getTime() + 24 * 3600_000);
+  async findHourlyRecords(
+    siteId: string | null | undefined,
+    fromStr?: string,
+    toStr?: string,
+  ) {
+    const kstToday = new Date(Date.now() + 9 * 3600_000).toISOString().slice(0, 10);
+    const valid = (s?: string) =>
+      s && /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : undefined;
+
+    let from = valid(fromStr) ?? kstToday;
+    let to = valid(toStr) ?? from;
+    if (from > to) [from, to] = [to, from]; // 시작이 종료보다 늦으면 교환
+
+    const MAX_DAYS = 92;
+    const startMs = new Date(`${from}T00:00:00+09:00`).getTime();
+    let endMs = new Date(`${to}T00:00:00+09:00`).getTime() + 24 * 3600_000;
+    if ((endMs - startMs) / 86400_000 > MAX_DAYS) {
+      endMs = startMs + MAX_DAYS * 86400_000;
+      to = new Date(endMs - 24 * 3600_000 + 9 * 3600_000)
+        .toISOString()
+        .slice(0, 10);
+    }
 
     const records = await this.prisma.heatHourlyRecord.findMany({
       where: {
         // siteId NULL 호환 (기존 데이터 보호 패턴 — 함정 #11)
         ...(siteId ? { OR: [{ siteId }, { siteId: null }] } : {}),
-        recordedAt: { gte: start, lt: end },
+        recordedAt: { gte: new Date(startMs), lt: new Date(endMs) },
       },
       orderBy: { recordedAt: 'asc' },
     });
-    return { date: ymd, records };
+    // date: from 은 단일일 하위호환용
+    return { from, to, date: from, records };
   }
 
   /**
