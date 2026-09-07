@@ -18,10 +18,8 @@ import { resolveSiteId } from '../common/utils/site-scope';
 import { PrismaService } from '../prisma/prisma.service';
 import { DiagnosticsService } from './diagnostics.service';
 import { CreateMobileDiagnosticDto } from './dto/create-mobile-diagnostic.dto';
-import {
-  listMobileDiagnosticsPaginated,
-  MOBILE_DIAGNOSTIC_ERROR_TYPES,
-} from './mobile-diagnostics.query';
+import { MOBILE_DIAGNOSTIC_ERROR_TYPES } from './mobile-diagnostic.constants';
+import { listMobileDiagnosticsPaginated } from './mobile-diagnostics.query';
 
 @Controller()
 export class DiagnosticsController {

@@ -1,5 +1,6 @@
 import { ApiProperty } from '@nestjs/swagger';
 import { IsString, IsOptional, IsInt, IsBoolean, IsObject, MaxLength, IsIn } from 'class-validator';
+import { MOBILE_DIAGNOSTIC_ERROR_TYPES } from '../mobile-diagnostic.constants';
 
 export class CreateMobileDiagnosticDto {
   @ApiProperty({ description: '진단 대상 화면', example: 'classifications' })
@@ -9,10 +10,10 @@ export class CreateMobileDiagnosticDto {
 
   @ApiProperty({
     description: '오류 유형',
-    enum: ['network', 'auth', 'http_5xx', 'empty_response', 'timeout', 'unknown'],
+    enum: MOBILE_DIAGNOSTIC_ERROR_TYPES,
   })
   @IsString()
-  @IsIn(['network', 'auth', 'http_5xx', 'empty_response', 'timeout', 'unknown'])
+  @IsIn(MOBILE_DIAGNOSTIC_ERROR_TYPES)
   errorType: string;
 
   @ApiProperty({ description: '오류 메시지 (사람이 읽는 텍스트)', required: false })

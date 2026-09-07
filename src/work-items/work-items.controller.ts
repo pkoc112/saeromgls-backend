@@ -34,6 +34,7 @@ import {
 } from './dto/update-work-item.dto';
 import { QueryWorkItemsDto } from './dto/query-work-items.dto';
 import { CreateManualWorkItemDto } from './dto/create-manual-work-item.dto';
+import { BulkWorkItemsDto } from './dto/bulk-work-items.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
@@ -299,6 +300,53 @@ export class WorkItemsController {
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     res.send(csvContent);
+  }
+
+  // 고정 경로는 ':id' 경로보다 먼저 선언해야 ParseUUIDPipe 오인식을 피할 수 있다.
+  @Post('admin/work-items/bulk-force-end')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN', 'SUPERVISOR')
+  @ApiBearerAuth('jwt')
+  @ApiTags('Admin Work Items')
+  @ApiOperation({
+    summary: '작업 일괄 강제 종료 (반장/관리자)',
+    description: '선택한 작업의 사업장 소유권을 모두 확인한 뒤 활성/중간마감 작업을 일괄 종료합니다.',
+  })
+  @ApiResponse({ status: 200, description: '처리 완료/건너뜀 작업 ID 목록' })
+  @ApiResponse({ status: 403, description: '다른 사업장의 작업이 포함됨' })
+  bulkForceEndWorkItems(
+    @Body() dto: BulkWorkItemsDto,
+    @CurrentUser() user: JwtPayload,
+    @Req() req: Request,
+  ) {
+    resolveSiteId(user);
+    const ip = req.ip || req.socket.remoteAddress;
+    const userAgent = req.headers['user-agent'];
+    return this.workItemsService.bulkForceEnd(dto, user.sub, ip, userAgent, user);
+  }
+
+  @Post('admin/work-items/bulk-void')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN', 'SUPERVISOR')
+  @ApiBearerAuth('jwt')
+  @ApiTags('Admin Work Items')
+  @ApiOperation({
+    summary: '작업 일괄 무효화 (반장/관리자)',
+    description: '선택한 작업의 사업장 소유권을 모두 확인한 뒤 작업 기록을 일괄 무효화합니다.',
+  })
+  @ApiResponse({ status: 200, description: '처리 완료/건너뜀 작업 ID 목록' })
+  @ApiResponse({ status: 403, description: '다른 사업장의 작업이 포함됨' })
+  bulkVoidWorkItems(
+    @Body() dto: BulkWorkItemsDto,
+    @CurrentUser() user: JwtPayload,
+    @Req() req: Request,
+  ) {
+    resolveSiteId(user);
+    const ip = req.ip || req.socket.remoteAddress;
+    const userAgent = req.headers['user-agent'];
+    return this.workItemsService.bulkVoid(dto, user.sub, ip, userAgent, user);
   }
 
   @Get('admin/work-items/:id')

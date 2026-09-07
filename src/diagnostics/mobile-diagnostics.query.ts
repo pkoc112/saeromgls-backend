@@ -14,16 +14,6 @@ import { kstStartOfDay, kstEndOfDay } from '../common/kst-date.util';
  * (추후 DiagnosticsService.listPaginated 로 이관 가능)
  */
 
-export const MOBILE_DIAGNOSTIC_ERROR_TYPES = [
-  'network',
-  'auth',
-  'http_5xx',
-  'empty_response',
-  'timeout',
-  'sync_dropped',
-  'unknown',
-] as const;
-
 const DATE_ONLY_RE = /^\d{4}-\d{2}-\d{2}$/;
 
 export interface ListMobileDiagnosticsParams {

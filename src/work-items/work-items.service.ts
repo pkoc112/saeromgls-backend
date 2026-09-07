@@ -16,6 +16,7 @@ import { PauseWorkItemDto } from './dto/pause-work-item.dto';
 import { UpdateWorkItemDto, VoidWorkItemDto, ForceEndWorkItemDto } from './dto/update-work-item.dto';
 import { QueryWorkItemsDto } from './dto/query-work-items.dto';
 import { CreateManualWorkItemDto } from './dto/create-manual-work-item.dto';
+import { BulkWorkItemsDto } from './dto/bulk-work-items.dto';
 import { Prisma } from '@prisma/client';
 
 import {
@@ -1136,6 +1137,95 @@ export class WorkItemsService {
     });
 
     return this.findOneForAdmin(updated.id);
+  }
+
+  /**
+   * 반장/관리자: 선택 작업 일괄 강제 종료.
+   * 대상 전체의 소유권을 먼저 검증해 다른 사업장 작업이 섞인 요청은 변경 없이 차단한다.
+   */
+  async bulkForceEnd(
+    dto: BulkWorkItemsDto,
+    actorWorkerId: string,
+    ip?: string,
+    userAgent?: string,
+    requester?: JwtPayload,
+  ): Promise<{ done: string[]; skipped: Array<{ id: string; reason: string }> }> {
+    await this.prevalidateBulkSiteOwnership(dto.ids, requester);
+
+    const done: string[] = [];
+    const skipped: Array<{ id: string; reason: string }> = [];
+
+    for (const id of dto.ids) {
+      try {
+        await this.forceEnd(id, { reason: dto.reason }, actorWorkerId, ip, userAgent, requester);
+        done.push(id);
+      } catch (error) {
+        if (error instanceof ForbiddenException) throw error;
+        if (error instanceof BadRequestException || error instanceof NotFoundException) {
+          skipped.push({ id, reason: this.getBulkSkipReason(error) });
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    return { done, skipped };
+  }
+
+  /**
+   * 반장/관리자: 선택 작업 일괄 무효화. 삭제하지 않고 VOID 상태와 감사 로그를 남긴다.
+   */
+  async bulkVoid(
+    dto: BulkWorkItemsDto,
+    actorWorkerId: string,
+    ip?: string,
+    userAgent?: string,
+    requester?: JwtPayload,
+  ): Promise<{ done: string[]; skipped: Array<{ id: string; reason: string }> }> {
+    await this.prevalidateBulkSiteOwnership(dto.ids, requester);
+
+    const done: string[] = [];
+    const skipped: Array<{ id: string; reason: string }> = [];
+
+    for (const id of dto.ids) {
+      try {
+        await this.voidWorkItem(id, { reason: dto.reason }, actorWorkerId, ip, userAgent, requester);
+        done.push(id);
+      } catch (error) {
+        if (error instanceof ForbiddenException) throw error;
+        if (error instanceof BadRequestException || error instanceof NotFoundException) {
+          skipped.push({ id, reason: this.getBulkSkipReason(error) });
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    return { done, skipped };
+  }
+
+  private async prevalidateBulkSiteOwnership(
+    ids: string[],
+    requester?: JwtPayload,
+  ): Promise<void> {
+    for (const id of ids) {
+      try {
+        await this.assertSiteOwnership(id, requester);
+      } catch (error) {
+        // 삭제 경쟁으로 사라진 항목은 처리 루프에서 skipped로 반환한다.
+        // 다른 사업장 항목 등 나머지 오류는 어떤 변경도 하기 전에 요청 전체를 차단한다.
+        if (error instanceof NotFoundException) continue;
+        throw error;
+      }
+    }
+  }
+
+  private getBulkSkipReason(error: BadRequestException | NotFoundException): string {
+    const response = error.getResponse();
+    if (typeof response === 'string') return response;
+    const message = (response as { message?: unknown })?.message;
+    if (Array.isArray(message)) return message.join(', ');
+    return typeof message === 'string' ? message : error.message;
   }
 
   // ======================== Internal ========================
