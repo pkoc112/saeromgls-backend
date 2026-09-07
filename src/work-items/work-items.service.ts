@@ -549,13 +549,10 @@ export class WorkItemsService {
   }
 
   /**
-   * 관리자: 작업 목록 조회 (페이지네이션, 필터)
+   * 관리자 목록/CSV 내보내기 공용 where 빌더
+   * siteId 격리(OR NULL 패턴) + 상태/분류/작업자/날짜 범위 필터
    */
-  async findAllForAdmin(query: QueryWorkItemsDto, siteId?: string) {
-    const page = query.page || 1;
-    const limit = query.limit || 20;
-    const skip = (page - 1) * limit;
-
+  private buildAdminWhere(query: QueryWorkItemsDto, siteId?: string): Prisma.WorkItemWhereInput {
     const where: Prisma.WorkItemWhereInput = {};
 
     // ★ siteId 격리: 해당 사업장 작업자 + siteId 미배정 작업자 모두 포함
@@ -577,11 +574,32 @@ export class WorkItemsService {
       where.classificationId = query.classificationId;
     }
 
-    if (query.workerId) {
-      where.OR = [
-        { startedByWorkerId: query.workerId },
-        { assignments: { some: { workerId: query.workerId } } },
-      ];
+    // 작업자 필터: 시작 작업자 또는 배정 참여자
+    const workerOr: Prisma.WorkItemWhereInput[] | null = query.workerId
+      ? [
+          { startedByWorkerId: query.workerId },
+          { assignments: { some: { workerId: query.workerId } } },
+        ]
+      : null;
+
+    // 검색어: 작업자명·분류표시명·비고 부분 일치 (대소문자 무시). 빈 문자열/공백은 무시
+    // ※ startedByWorker 조건은 OR 항목 내부에만 두어 상단 siteId 격리(where.startedByWorker)를 덮어쓰지 않음
+    const search = query.search?.trim();
+    const searchOr: Prisma.WorkItemWhereInput[] | null = search
+      ? [
+          { notes: { contains: search, mode: 'insensitive' } },
+          { startedByWorker: { name: { contains: search, mode: 'insensitive' } } },
+          { classification: { displayName: { contains: search, mode: 'insensitive' } } },
+        ]
+      : null;
+
+    // 작업자 OR와 검색 OR가 둘 다 있으면 AND로 결합 (서로 덮어쓰기 방지)
+    if (workerOr && searchOr) {
+      where.AND = [{ OR: workerOr }, { OR: searchOr }];
+    } else if (workerOr) {
+      where.OR = workerOr;
+    } else if (searchOr) {
+      where.OR = searchOr;
     }
 
     // 날짜 범위 필터 (KST 기준)
@@ -594,6 +612,19 @@ export class WorkItemsService {
         where.startedAt.lte = kstEndOfDay(query.to);
       }
     }
+
+    return where;
+  }
+
+  /**
+   * 관리자: 작업 목록 조회 (페이지네이션, 필터)
+   */
+  async findAllForAdmin(query: QueryWorkItemsDto, siteId?: string) {
+    const page = query.page || 1;
+    const limit = query.limit || 20;
+    const skip = (page - 1) * limit;
+
+    const where = this.buildAdminWhere(query, siteId);
 
     const [data, total] = await Promise.all([
       this.prisma.workItem.findMany({
@@ -644,6 +675,92 @@ export class WorkItemsService {
         totalPages: Math.ceil(total / limit),
       },
     };
+  }
+
+  /**
+   * 관리자: 작업 기록 CSV 내보내기
+   * 목록 조회(findAllForAdmin)와 동일한 필터(siteId 격리 + 상태/분류/작업자/날짜)를 적용하되
+   * 페이지네이션 없이 최대 10,000건. 출력 형식은 DashboardService.exportCsv 와 동일 (BOM + 한글 헤더)
+   */
+  async exportCsvForAdmin(query: QueryWorkItemsDto, siteId?: string): Promise<string> {
+    const MAX_CSV_ROWS = 10000;
+    const where = this.buildAdminWhere(query, siteId);
+
+    const items = await this.prisma.workItem.findMany({
+      where,
+      include: {
+        classification: { select: { code: true, displayName: true } },
+        startedByWorker: { select: { name: true, employeeCode: true } },
+        endedByWorker: { select: { name: true, employeeCode: true } },
+        assignments: {
+          include: { worker: { select: { name: true, employeeCode: true } } },
+        },
+      },
+      orderBy: { startedAt: 'asc' },
+      take: MAX_CSV_ROWS,
+    });
+
+    // CSV 헤더 (한글) — DashboardService.exportCsv 와 동일
+    const headers = [
+      '작업ID',
+      '상태',
+      '분류코드',
+      '분류명',
+      '시작작업자사번',
+      '시작작업자명',
+      '종료작업자사번',
+      '종료작업자명',
+      '물량',
+      '수량',
+      '시작시각',
+      '종료시각',
+      '작업시간(분)',
+      '참여자',
+      '비고',
+    ];
+
+    const rows = items.map((item) => {
+      // 작업 시간 계산 (분)
+      let durationMinutes = '';
+      if (item.endedAt && item.startedAt) {
+        const diff = (item.endedAt.getTime() - item.startedAt.getTime()) / 60000;
+        durationMinutes = diff.toFixed(1);
+      }
+
+      // 참여자 목록
+      const participants = item.assignments
+        .map((a) => `${a.worker.name}(${a.worker.employeeCode})`)
+        .join('; ');
+
+      return [
+        item.id,
+        item.status,
+        item.classification.code,
+        item.classification.displayName,
+        item.startedByWorker.employeeCode,
+        item.startedByWorker.name,
+        item.endedByWorker?.employeeCode || '',
+        item.endedByWorker?.name || '',
+        item.volume.toString(),
+        item.quantity.toString(),
+        item.startedAt.toISOString(),
+        item.endedAt?.toISOString() || '',
+        durationMinutes,
+        participants,
+        item.notes || '',
+      ];
+    });
+
+    // BOM + CSV 생성 (Excel 한글 호환)
+    const bom = '\uFEFF';
+    const csvContent = [
+      headers.join(','),
+      ...rows.map((row) =>
+        row.map((cell) => `"${String(cell).replace(/"/g, '""')}"`).join(','),
+      ),
+    ].join('\n');
+
+    return bom + csvContent;
   }
 
   /**

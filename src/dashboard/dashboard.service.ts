@@ -1,7 +1,40 @@
-import { Injectable, Logger, InternalServerErrorException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  InternalServerErrorException,
+  BadRequestException,
+} from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { Prisma } from '@prisma/client';
 import { kstDateRange } from '../common/kst-date.util';
+
+/** CSV 내보내기 선택 필터 (C2 계약: status / classificationId / workerId) */
+export interface ExportCsvFilters {
+  status?: string;
+  classificationId?: string;
+  workerId?: string;
+}
+
+/** 작업 상태 허용값 (QueryWorkItemsDto.status와 동일) */
+const WORK_ITEM_STATUSES = ['ACTIVE', 'PAUSED', 'ENDED', 'VOID'] as const;
+
+/**
+ * CSV status 필터 정규화
+ * - 대소문자 무시 (CLAUDE.md 함정 #21)
+ * - 프론트 레거시 'in_progress' → 'ACTIVE' 호환
+ * - 빈 값이면 undefined(필터 없음), 알 수 없는 값이면 400
+ */
+function normalizeWorkItemStatus(raw?: string): string | undefined {
+  const value = raw?.trim().toUpperCase();
+  if (!value) return undefined;
+  const mapped = value === 'IN_PROGRESS' ? 'ACTIVE' : value;
+  if (!(WORK_ITEM_STATUSES as readonly string[]).includes(mapped)) {
+    throw new BadRequestException(
+      `status는 ${WORK_ITEM_STATUSES.join(', ')} 중 하나여야 합니다`,
+    );
+  }
+  return mapped;
+}
 
 @Injectable()
 export class DashboardService {
@@ -268,16 +301,51 @@ export class DashboardService {
   /**
    * CSV 내보내기
    * 지정 기간의 모든 작업 데이터를 CSV 문자열로 반환
+   *
+   * @param filters 선택 필터 (C2 계약) — 작업기록 목록(findAllForAdmin)과 동일한 의미
+   *   - status: ACTIVE|PAUSED|ENDED|VOID (대소문자 무시, 'IN_PROGRESS'→ACTIVE 호환)
+   *   - classificationId: 분류 ID
+   *   - workerId: 시작 작업자 또는 배정 참여자
+   *   기존 호출 exportCsv(from, to, siteId) 는 filters 없이 그대로 동작 (하위호환)
    */
-  async exportCsv(from: string, to: string, siteId?: string): Promise<string> {
+  async exportCsv(
+    from: string,
+    to: string,
+    siteId?: string,
+    filters?: ExportCsvFilters,
+  ): Promise<string> {
     const { fromDate, toDate } = kstDateRange(from, to);
+
+    const where: Prisma.WorkItemWhereInput = {
+      startedAt: { gte: fromDate, lte: toDate },
+      // ★ siteId 격리: 해당 사업장 작업자 + siteId 미배정(NULL) 작업자 포함 (기존 데이터 보호)
+      ...(siteId && { startedByWorker: { OR: [{ siteId }, { siteId: null }] } }),
+    };
+
+    // 상태 필터 (목록 조회와 동일 값). 컨트롤러에 DTO 검증이 없으므로 여기서 정규화·검증
+    const status = normalizeWorkItemStatus(filters?.status);
+    if (status) {
+      where.status = status;
+    }
+
+    // 분류 필터
+    const classificationId = filters?.classificationId?.trim();
+    if (classificationId) {
+      where.classificationId = classificationId;
+    }
+
+    // 작업자 필터: 시작 작업자 또는 배정 참여자 (findAllForAdmin과 동일)
+    const workerId = filters?.workerId?.trim();
+    if (workerId) {
+      where.OR = [
+        { startedByWorkerId: workerId },
+        { assignments: { some: { workerId } } },
+      ];
+    }
 
     const MAX_CSV_ROWS = 10000;
     const items = await this.prisma.workItem.findMany({
-      where: {
-        startedAt: { gte: fromDate, lte: toDate },
-        ...(siteId && { startedByWorker: { OR: [{ siteId }, { siteId: null }] } }),
-      },
+      where,
       include: {
         classification: { select: { code: true, displayName: true } },
         startedByWorker: { select: { name: true, employeeCode: true } },

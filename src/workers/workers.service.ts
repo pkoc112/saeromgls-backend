@@ -74,16 +74,34 @@ export class WorkersService {
     status?: string;
     siteId?: string;
     role?: string; // 특정 역할만 조회 (관리자 등). 미지정 시 관리역할 제외(기본)
+    search?: string; // 이름 또는 사번 부분 일치 (대소문자 무시)
     callerRole?: string; // 호출자 역할 — 관리역할 조회 권한 게이트
   }) {
-    const page = params.page || 1;
-    const limit = params.limit || 20;
+    // page/limit: 쿼리 문자열이 그대로 올 수 있으므로 Number() 파싱 후 정수 보정
+    const parsedPage = Math.floor(Number(params.page));
+    const page = Number.isFinite(parsedPage) && parsedPage > 0 ? parsedPage : 1;
+    // limit: 1~200 클램프 (기본 20 유지 = 하위호환). 웹 작업자 목록은 200 전송.
+    const MAX_LIMIT = 200;
+    const DEFAULT_LIMIT = 20;
+    const parsedLimit = Math.floor(Number(params.limit));
+    const limit =
+      Number.isFinite(parsedLimit) && parsedLimit > 0
+        ? Math.min(parsedLimit, MAX_LIMIT)
+        : DEFAULT_LIMIT;
     const skip = (page - 1) * limit;
 
     const where: Record<string, unknown> = {};
     if (params.status) where.status = params.status;
     // 사업장 격리: siteId가 있으면 해당 사업장 작업자만 조회
     if (params.siteId) where.siteId = params.siteId;
+    // 검색: 이름 또는 사번 contains (대소문자 무시). 빈 문자열/공백은 무시
+    const search = params.search?.trim();
+    if (search) {
+      where.OR = [
+        { name: { contains: search, mode: 'insensitive' } },
+        { employeeCode: { contains: search, mode: 'insensitive' } },
+      ];
+    }
     // 역할 필터:
     //  - 기본: 관리 역할(MASTER/ADMIN)은 작업자 목록에서 제외
     //  - role 지정 시: 해당 역할만 조회. 단 관리 역할 조회는 MASTER/ADMIN만, MASTER 조회는 MASTER만 허용

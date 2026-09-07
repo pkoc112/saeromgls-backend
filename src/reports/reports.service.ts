@@ -23,27 +23,43 @@ export class ReportsService {
     includeAi = false,
   ) {
     // 1) 기본정보
+    const groupBy: 'hour' | 'day' | 'week' =
+      type === 'daily' ? 'hour' : type === 'weekly' ? 'day' : 'week';
     const reportInfo = {
       type,
       period: { from, to },
       generatedAt: new Date().toISOString(),
       siteId: siteId || 'ALL',
+      // 프론트가 추이 구간 라벨(시간대/일자/주차)을 결정할 때 사용
+      groupBy,
     };
 
-    // 2) KPI 요약, 트렌드, 전기 대비 증감, 알림 — 병렬 조회
-    const groupBy = type === 'daily' ? 'hour' : type === 'weekly' ? 'day' : 'week';
-    const [stats, trends, comparison, alertsData] = await Promise.all([
+    // 2) KPI 요약, 트렌드, 전기 대비 증감, 알림, 작업자 전원 — 병렬 조회
+    const [stats, trends, comparison, alertsData, workerStatsData] = await Promise.all([
       this.dashboardService.getStats(from, to, siteId),
       this.dashboardService.getTrends(from, to, groupBy, siteId),
       this.dashboardService.getComparison(from, to, siteId),
       this.dashboardService.getAlerts(from, to, siteId),
+      // getStats.topWorkers는 take:10 캡이 있으므로 캡 없는 getWorkerStats를 별도 호출
+      this.dashboardService.getWorkerStats(siteId, from, to),
     ]);
 
     // 5) 분류별 실적 (stats에서 추출)
     const classificationPerformance = stats.byClassification;
 
-    // 6) 작업자 TOP 5
-    const topWorkers = (stats.topWorkers || []).slice(0, 5);
+    // 6) 작업자 전원 (캡 없음, ENDED 기준 — KPI 총 CBM/BOX와 동일 기준)
+    //    프론트 기존 shape { worker: { id, name, employeeCode }, count, totalVolume, totalQuantity } 유지 + avgDuration 추가
+    const topWorkers = (workerStatsData.topWorkers || []).map((w) => ({
+      worker: { id: w.workerId, name: w.name, employeeCode: w.employeeCode },
+      count: Number(w.count ?? 0),
+      totalVolume: Number(w.totalVolume ?? 0),
+      totalQuantity: Number(w.totalQuantity ?? 0),
+      avgDuration:
+        w.avgDuration != null && !Number.isNaN(Number(w.avgDuration))
+          ? Math.round(Number(w.avgDuration) * 100) / 100
+          : null,
+    }));
+    const workerCount = Number(workerStatsData.totalWorkers ?? topWorkers.length);
 
     // 7) 특이사항 — 알림 기반
     const anomalies = alertsData.alerts || [];
@@ -66,13 +82,25 @@ export class ReportsService {
         avgDurationMinutes: stats.avgDurationMinutes,
       },
       comparison: {
+        // changeRate는 '+12.3%' / '-4.0%' / '0.0%' 형식 문자열 (dashboard.service.calcRate)
         countChange: comparison.count.changeRate,
         volumeChange: comparison.volume.changeRate,
         quantityChange: comparison.quantity.changeRate,
         previousPeriod: comparison.period.previous,
+        current: {
+          count: Number(comparison.count.current ?? 0),
+          volume: Number(comparison.volume.current ?? 0),
+          quantity: Number(comparison.quantity.current ?? 0),
+        },
+        previous: {
+          count: Number(comparison.count.previous ?? 0),
+          volume: Number(comparison.volume.previous ?? 0),
+          quantity: Number(comparison.quantity.previous ?? 0),
+        },
       },
       classificationPerformance,
       topWorkers,
+      workerCount,
       trends,
       anomalies,
       aiSummary,

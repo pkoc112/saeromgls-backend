@@ -1,5 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
-import { IsDateString, IsIn, IsOptional, IsString, IsInt, Min, Max } from 'class-validator';
+import { IsDateString, IsIn, IsOptional, IsString, IsInt, Min, Max, MaxLength } from 'class-validator';
 
 /**
  * 관리자 작업 목록 조회 쿼리 DTO
@@ -77,4 +77,14 @@ export class QueryWorkItemsDto {
   @IsString()
   @IsOptional()
   siteId?: string;
+
+  @ApiProperty({
+    description: '검색어 (작업자명·분류표시명·비고 부분 일치, 대소문자 무시, 최대 100자)',
+    required: false,
+    maxLength: 100,
+  })
+  @IsString()
+  @MaxLength(100, { message: '검색어는 최대 100자까지 입력 가능합니다' })
+  @IsOptional()
+  search?: string;
 }

@@ -12,6 +12,7 @@ import {
   HttpCode,
   HttpStatus,
   Req,
+  Res,
 } from '@nestjs/common';
 import {
   ApiTags,
@@ -21,7 +22,7 @@ import {
   ApiParam,
   ApiQuery,
 } from '@nestjs/swagger';
-import { Request } from 'express';
+import { Request, Response } from 'express';
 import { WorkItemsService } from './work-items.service';
 import { CreateWorkItemDto } from './dto/create-work-item.dto';
 import { EndWorkItemDto } from './dto/end-work-item.dto';
@@ -38,6 +39,8 @@ import { Roles } from '../auth/roles.decorator';
 import { CurrentUser, JwtPayload } from '../common/decorators/current-user.decorator';
 import { resolveSiteId } from '../common/utils/site-scope';
 import { SubscriptionGateGuard } from '../common/guards/subscription-gate.guard';
+import { EntitlementGuard } from '../common/guards/entitlement.guard';
+import { Feature } from '../common/decorators/feature.decorator';
 
 @Controller()
 export class WorkItemsController {
@@ -243,6 +246,33 @@ export class WorkItemsController {
     // siteId 격리: ADMIN은 자기 사업장만, MASTER는 전체 또는 지정
     const siteId = resolveSiteId(user, query.siteId);
     return this.workItemsService.findAllForAdmin(query, siteId);
+  }
+
+  // ★ 반드시 'admin/work-items/:id' 보다 먼저 선언 — 아니면 'export'가 :id(ParseUUIDPipe)에 걸려 400
+  @Get('admin/work-items/export')
+  @UseGuards(JwtAuthGuard, RolesGuard, EntitlementGuard)
+  @Roles('ADMIN', 'SUPERVISOR')
+  @Feature('CSV_EXPORT')
+  @ApiBearerAuth('jwt')
+  @ApiTags('Admin Work Items')
+  @ApiOperation({
+    summary: '작업 기록 CSV 내보내기 (관리자)',
+    description: '목록 조회와 동일한 상태/분류/작업자/날짜 범위 필터 적용. 최대 10,000건.',
+  })
+  @ApiResponse({ status: 200, description: 'CSV 파일 (BOM + UTF-8)' })
+  @ApiResponse({ status: 403, description: '플랜에 CSV_EXPORT 기능 없음' })
+  async exportCsvForAdmin(
+    @Query() query: QueryWorkItemsDto,
+    @CurrentUser() user: JwtPayload,
+    @Res() res: Response,
+  ) {
+    // siteId 격리: ADMIN은 자기 사업장만, MASTER는 전체 또는 지정
+    const siteId = resolveSiteId(user, query.siteId);
+    const csvContent = await this.workItemsService.exportCsvForAdmin(query, siteId);
+    const filename = `work-items-${query.from || 'all'}-to-${query.to || 'all'}.csv`;
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+    res.send(csvContent);
   }
 
   @Get('admin/work-items/:id')

@@ -45,9 +45,10 @@ export class WorkersController {
   @ApiTags('Admin Workers')
   @ApiOperation({ summary: '작업자 목록 조회 (관리자 — 사업장 격리)' })
   @ApiQuery({ name: 'page', required: false, type: Number, description: '페이지 번호 (기본: 1)' })
-  @ApiQuery({ name: 'limit', required: false, type: Number, description: '페이지당 항목 수 (기본: 20)' })
+  @ApiQuery({ name: 'limit', required: false, type: Number, description: '페이지당 항목 수 (기본: 20, 최대: 200)' })
   @ApiQuery({ name: 'status', required: false, enum: ['ACTIVE', 'INACTIVE'], description: '상태 필터' })
   @ApiQuery({ name: 'siteId', required: false, description: '사업장 ID (MASTER만 지정 가능)' })
+  @ApiQuery({ name: 'search', required: false, type: String, description: '이름 또는 사번 검색 (부분 일치, 대소문자 무시)' })
   @ApiResponse({ status: 200, description: '작업자 목록 + 페이지네이션 메타' })
   findAll(
     @CurrentUser() user: JwtPayload,
@@ -56,11 +57,12 @@ export class WorkersController {
     @Query('status') status?: string,
     @Query('siteId') querySiteId?: string,
     @Query('role') role?: string,
+    @Query('search') search?: string,
   ) {
     // MASTER: querySiteId 지정 가능 (없으면 전체), ADMIN/SUPERVISOR: 자기 사업장만
     const siteId = resolveSiteId(user, querySiteId);
     // role 필터는 service에서 호출자 역할로 권한 게이트 (관리자 조회는 MASTER/ADMIN만)
-    return this.workersService.findAll({ page, limit, status, siteId, role, callerRole: user.role });
+    return this.workersService.findAll({ page, limit, status, siteId, role, search, callerRole: user.role });
   }
 
   @Post('admin/workers/migrate-tracks-v3')

@@ -5,15 +5,46 @@ import {
   NotFoundException,
   Logger,
 } from '@nestjs/common';
+import { randomInt } from 'crypto';
+import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateSiteDto } from './dto/create-site.dto';
 import { UpdateSiteDto } from './dto/update-site.dto';
+
+/**
+ * 태블릿(키오스크) 자동발급 계정의 사번 접미어.
+ * 사번은 `<사업장코드>-KIOSK` (사업장 코드가 전역 unique이므로 사번도 전역 unique 보장).
+ */
+const KIOSK_CODE_SUFFIX = '-KIOSK';
+
+/** 사업장 생성 시 1회만 평문으로 반환되는 태블릿 로그인 정보 */
+export interface KioskCredentials {
+  employeeCode: string;
+  pin: string;
+}
 
 @Injectable()
 export class SitesService {
   private readonly logger = new Logger(SitesService.name);
 
   constructor(private readonly prisma: PrismaService) {}
+
+  /**
+   * 사업장 목록의 '담당자' 노출용 workers include.
+   * ADMIN/SUPERVISOR + ACTIVE 만, 태블릿 키오스크 계정(-KIOSK)은 사람이 아니므로 제외.
+   * 호출 측(MASTER 전체 / ADMIN 자기 사업장)은 이미 사업장 범위가 제한되어 있어 추가 격리 불필요.
+   */
+  private managersInclude() {
+    return {
+      where: {
+        role: { in: ['ADMIN', 'SUPERVISOR'] },
+        status: 'ACTIVE',
+        NOT: { employeeCode: { contains: KIOSK_CODE_SUFFIX } },
+      },
+      select: { id: true, name: true, email: true, role: true },
+      orderBy: [{ role: 'asc' as const }, { name: 'asc' as const }],
+    };
+  }
 
   /**
    * 관리 활동 감사 로그 (DB) — 테넌트 개통/삭제 등 추적 (개통 분석 P2).
@@ -41,7 +72,8 @@ export class SitesService {
   }
 
   /**
-   * 전체 사업장 목록 조회 (이름순 정렬)
+   * 전체 사업장 목록 조회 (이름순 정렬) — MASTER 전용.
+   * 응답 `managers`: 담당 관리자(ADMIN/SUPERVISOR, ACTIVE) [{ id, name, email, role }] — MASTER 조회이므로 마스킹 없음.
    */
   async findAll() {
     const sites = await this.prisma.site.findMany({
@@ -49,6 +81,7 @@ export class SitesService {
       include: {
         _count: { select: { workers: true, childSites: true } },
         parentSite: { select: { id: true, name: true, code: true } },
+        workers: this.managersInclude(),
       },
     });
 
@@ -56,12 +89,14 @@ export class SitesService {
       ...site,
       workerCount: site._count.workers,
       childCount: site._count.childSites,
+      managers: site.workers,
+      workers: undefined,
       _count: undefined,
     }));
   }
 
   /**
-   * 소속 사업장만 조회 (ADMIN용)
+   * 소속 사업장만 조회 (ADMIN용). `managers`는 자기 사업장 범위 안의 관리자만 포함(교차 테넌트 노출 없음).
    */
   async findBySiteId(siteId?: string) {
     if (!siteId) return [];
@@ -72,12 +107,15 @@ export class SitesService {
       include: {
         _count: { select: { workers: true, childSites: true } },
         parentSite: { select: { id: true, name: true, code: true } },
+        workers: this.managersInclude(),
       },
     });
     return sites.map((site) => ({
       ...site,
       workerCount: site._count.workers,
       childCount: site._count.childSites,
+      managers: site.workers,
+      workers: undefined,
       _count: undefined,
     }));
   }
@@ -99,6 +137,9 @@ export class SitesService {
 
   /**
    * 사업장 생성
+   *
+   * 최상위 사이트(parentSiteId 없음) 생성 시 응답에 `kiosk: { employeeCode, pin }`(평문 PIN, 이 응답 1회만)이
+   * 포함된다 — 태블릿 로그인용 SUPERVISOR 계정이 자동 발급되기 때문. 하위 사업장은 `kiosk` 없음.
    */
   async create(dto: CreateSiteDto, actorId?: string) {
     // 코드 중복 검사
@@ -119,7 +160,17 @@ export class SitesService {
       if (!parent.isActive) throw new BadRequestException('비활성 사업장 아래에 생성할 수 없습니다');
     }
 
-    const site = await this.prisma.$transaction(async (tx) => {
+    // ★ 태블릿(키오스크) 계정 자격증명은 트랜잭션 밖에서 미리 준비 (bcrypt 비용을 tx 타임아웃에서 분리).
+    //   PIN: 암호학적 난수 6자리, 해시는 workers.service 와 동일 (bcrypt salt 10).
+    let kioskPlain: KioskCredentials | null = null;
+    let kioskPinHash: string | null = null;
+    if (!dto.parentSiteId) {
+      const pin = String(randomInt(0, 1_000_000)).padStart(6, '0');
+      kioskPinHash = await bcrypt.hash(pin, 10);
+      kioskPlain = { employeeCode: `${dto.code}${KIOSK_CODE_SUFFIX}`, pin };
+    }
+
+    const { created: site, kiosk } = await this.prisma.$transaction(async (tx) => {
       const created = await tx.site.create({
         data: {
           name: dto.name,
@@ -192,9 +243,37 @@ export class SitesService {
         } else {
           this.logger.warn(`BASIC plan not found — trial skipped for site ${created.code}`);
         }
+
+        // 5) 태블릿(키오스크) 로그인 계정 자동 발급 — 신규 센터가 관리자 초대 없이도 바로 태블릿 로그인 가능.
+        //    - role SUPERVISOR: PIN 로그인 목록(/mobile/workers → filterLoginWorkers)은 WORKER만 제외하므로 로그인 가능
+        //    - mobileVisible true 필수: /mobile/workers 가 mobileVisible=true 만 반환하므로 false 면 PIN 로그인 목록에
+        //      아예 안 떠서 계정이 무용지물이 됨. (작업자 선택 카드에도 노출되는 부작용은 이름 '태블릿-<코드>'로 식별)
+        //    - 사번 `<코드>-KIOSK`: 사업장 코드 전역 unique → 사번 전역 unique. 잔존 사번과 충돌 시 숫자 접미어 fallback.
+        if (kioskPlain && kioskPinHash) {
+          let employeeCode = kioskPlain.employeeCode;
+          const taken = await tx.worker.findUnique({
+            where: { employeeCode },
+            select: { id: true },
+          });
+          if (taken) employeeCode = `${employeeCode}${randomInt(10, 100)}`;
+
+          await tx.worker.create({
+            data: {
+              name: `태블릿-${created.code}`,
+              employeeCode,
+              pin: kioskPinHash,
+              role: 'SUPERVISOR',
+              status: 'ACTIVE',
+              mobileVisible: true,
+              siteId: created.id,
+            },
+          });
+          kioskPlain = { ...kioskPlain, employeeCode };
+          this.logger.log(`Kiosk account issued for site ${created.code}: ${employeeCode}`);
+        }
       }
 
-      return created;
+      return { created, kiosk: kioskPlain };
     });
 
     this.logger.log(`Site created: ${site.name} (${site.code})`);
@@ -203,8 +282,11 @@ export class SitesService {
       code: site.code,
       parentSiteId: dto.parentSiteId ?? null,
       bootstrappedTrial: !dto.parentSiteId,
+      // PIN 은 절대 기록하지 않음 — 사번만
+      kioskEmployeeCode: kiosk?.employeeCode ?? null,
     });
-    return site;
+    // 기존 반환 shape 유지(하위 사업장은 site 그대로). 최상위만 kiosk 평문을 1회 첨부.
+    return kiosk ? { ...site, kiosk } : site;
   }
 
   /**

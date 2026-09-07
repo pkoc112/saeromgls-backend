@@ -39,7 +39,11 @@ export class SitesController {
   @Roles('ADMIN')
   @ApiBearerAuth('jwt')
   @ApiTags('Admin Sites')
-  @ApiOperation({ summary: '사업장 목록 조회 — MASTER: 전체, ADMIN: 소속만' })
+  @ApiOperation({
+    summary: '사업장 목록 조회 — MASTER: 전체, ADMIN: 소속만',
+    description:
+      '각 항목에 workerCount/childCount 와 담당 관리자 `managers: [{ id, name, email, role }]`(ADMIN/SUPERVISOR, ACTIVE) 포함.',
+  })
   @ApiResponse({ status: 200, description: '사업장 목록' })
   findAll(@CurrentUser() user: JwtPayload) {
     // MASTER는 전체, ADMIN은 소속 사업장만
@@ -54,11 +58,16 @@ export class SitesController {
   @Roles('ADMIN')
   @ApiBearerAuth('jwt')
   @ApiTags('Admin Sites')
-  @ApiOperation({ summary: '사업장 생성 — MASTER: 어디든, ADMIN: 본인 하위만' })
-  @ApiResponse({ status: 201, description: '사업장 생성 완료' })
+  @ApiOperation({
+    summary: '사업장 생성 — MASTER: 어디든, ADMIN: 본인 하위만',
+    description:
+      '최상위 사업장 생성 시 태블릿 로그인용 SUPERVISOR 계정이 자동 발급되어 응답에 `kiosk: { employeeCode, pin }`(평문 PIN, 이 응답 1회만)이 포함됩니다. 하위 사업장은 kiosk 없음.',
+  })
+  @ApiResponse({ status: 201, description: '사업장 생성 완료 (최상위: kiosk 로그인 정보 포함)' })
   @ApiResponse({ status: 400, description: '유효성 검사 실패' })
   @ApiResponse({ status: 409, description: '코드 중복' })
   create(@Body() dto: CreateSiteDto, @CurrentUser() user: JwtPayload) {
+    // 서비스 반환값(kiosk 포함)을 가공 없이 그대로 통과시킨다.
     // ADMIN은 본인 사업장 하위에만 생성 가능
     if (user.role !== 'MASTER') {
       if (!dto.parentSiteId || dto.parentSiteId !== user.siteId) {
