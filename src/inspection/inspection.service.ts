@@ -225,7 +225,10 @@ export class InspectionService {
               status: true,
               volume: true,
               quantity: true,
+              endedAt: true,
               classification: { select: { id: true, code: true, displayName: true } },
+              // 검수 이력 표시용: 작업을 수행한 작업자 (이름/사번)
+              startedByWorker: { select: { id: true, name: true, employeeCode: true } },
             },
           },
           inspectedBy: { select: { id: true, name: true, employeeCode: true } },
@@ -242,6 +245,13 @@ export class InspectionService {
         ...r,
         quantityChecked: Number(r.quantityChecked),
         quantityDefect: Number(r.quantityDefect),
+        sourceWorkItem: r.sourceWorkItem
+          ? {
+              ...r.sourceWorkItem,
+              // Prisma Decimal → number (프론트 NaN 방지)
+              volume: Number(r.sourceWorkItem.volume),
+            }
+          : r.sourceWorkItem,
       })),
       meta: {
         total,

@@ -27,6 +27,7 @@ import { CronModule } from './cron/cron.module';
 import { DiagnosticsModule } from './diagnostics/diagnostics.module';
 import { HeatAlertsModule } from './heat-alerts/heat-alerts.module';
 import { InvoicesModule } from './invoices/invoices.module';
+import { NotificationsModule } from './common/notifications/notifications.module';
 
 @Module({
   imports: [
@@ -57,6 +58,7 @@ import { InvoicesModule } from './invoices/invoices.module';
     DiagnosticsModule,
     HeatAlertsModule,
     InvoicesModule,
+    NotificationsModule,
   ],
   providers: [{ provide: APP_GUARD, useClass: ThrottlerGuard }],
 })

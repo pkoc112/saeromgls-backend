@@ -2,16 +2,43 @@ import {
   Injectable,
   ConflictException,
   NotFoundException,
+  HttpException,
   Logger,
 } from '@nestjs/common';
 import * as bcrypt from 'bcrypt';
+import { randomInt } from 'crypto';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateWorkerDto } from './dto/create-worker.dto';
 import { UpdateWorkerDto } from './dto/update-worker.dto';
+import { BulkCreateWorkerRowDto, BulkWorkerRole } from './dto/bulk-create-workers.dto';
 import { UsageLimitService } from '../subscriptions/usage-limit.service';
 
 /** 관리 역할 — 작업자 목록에서 제외 */
 const MANAGEMENT_ROLES = ['MASTER', 'ADMIN'] as const;
+
+/** 일괄 등록 결과 — 성공 행 (pin은 서버가 자동 생성한 경우에만 평문 1회 포함) */
+export interface BulkCreatedRow {
+  row: number;
+  id: string;
+  employeeCode: string;
+  name: string;
+  role: string;
+  pin?: string;
+}
+
+/** 일괄 등록 결과 — 실패 행 */
+export interface BulkFailedRow {
+  row: number;
+  employeeCode: string;
+  name: string;
+  reason: string;
+}
+
+export interface BulkCreateResult {
+  total: number;
+  created: BulkCreatedRow[];
+  failed: BulkFailedRow[];
+}
 
 @Injectable()
 export class WorkersService {
@@ -222,6 +249,18 @@ export class WorkersService {
   }
 
   /**
+   * 사번에 센터 접두어 적용 (예: prefix "DH", code "001" → "DH-001").
+   * 이미 접두어로 시작하면(대소문자 무시) 중복 적용하지 않음. prefix 없으면 trim만.
+   */
+  private withCodePrefix(rawCode: string, prefix: string | null): string {
+    const code = rawCode.trim();
+    if (prefix && !code.toUpperCase().startsWith(prefix.toUpperCase())) {
+      return `${prefix}-${code}`;
+    }
+    return code;
+  }
+
+  /**
    * 작업자 생성 (관리자 전용)
    * @param dto 작업자 정보
    * @param callerSiteId 호출자의 사업장 ID (ADMIN이면 자동 배정)
@@ -232,13 +271,8 @@ export class WorkersService {
 
     // 사번 접두어 자동 적용 — 센터별 TenantSettings.workerCodePrefix (예: "DH" → "DH-001").
     // 전역 unique 제약 하에서도 센터 간 사번 충돌을 방지(마이그레이션 불필요). 이미 접두어가 있으면 중복 적용 안 함.
-    let employeeCode = dto.employeeCode.trim();
-    if (siteId) {
-      const prefix = await this.getWorkerCodePrefix(siteId);
-      if (prefix && !employeeCode.toUpperCase().startsWith(prefix.toUpperCase())) {
-        employeeCode = `${prefix}-${employeeCode}`;
-      }
-    }
+    const prefix = siteId ? await this.getWorkerCodePrefix(siteId) : null;
+    const employeeCode = this.withCodePrefix(dto.employeeCode, prefix);
 
     // 사번 중복 확인 (최종 코드 기준)
     const existing = await this.prisma.worker.findUnique({
@@ -285,6 +319,124 @@ export class WorkersService {
   }
 
   /**
+   * 작업자 일괄 등록 (관리자 전용, 최대 100행)
+   * - 배치 내 사번(센터 접두어 적용 후, 대소문자 무시) 사전 dedupe → 뒤에 오는 중복 행은 failed
+   * - 행별로 기존 create() 재사용 (접두어·전역 중복·bcrypt·플랜 상한 그대로) — 한 행 실패가 다른 행을 막지 않음
+   * - WORKER 행은 pin 미지정 시 난수 4자리 생성해 created.pin에 평문 1회 반환 (관리자 전달용, 로그엔 남기지 않음)
+   * - SUPERVISOR/ADMIN 행은 pin 필수, ADMIN 행은 MASTER 호출자만 생성 가능 (역할 승격 제한)
+   *
+   * @param rows 등록 행 목록 (DTO 검증 완료)
+   * @param siteId 대상 사업장 (controller에서 resolveSiteId로 확정 — ADMIN은 자기 사업장, MASTER는 body.siteId)
+   * @param callerRole 호출자 역할 (ADMIN 행 생성 제한 판단)
+   */
+  async bulkCreate(
+    rows: BulkCreateWorkerRowDto[],
+    siteId: string | undefined,
+    callerRole: string,
+  ): Promise<BulkCreateResult> {
+    const created: BulkCreatedRow[] = [];
+    const failed: BulkFailedRow[] = [];
+    const callerIsMaster = callerRole?.toUpperCase() === 'MASTER';
+
+    // 접두어는 한 번만 조회 (행별 create()도 내부에서 다시 적용하지만 결과는 동일)
+    const prefix = siteId ? await this.getWorkerCodePrefix(siteId) : null;
+
+    // 1) 배치 내 사번 사전 dedupe — 최종 코드(접두어 적용) 기준, 대소문자 무시
+    const seenCodes = new Set<string>();
+    const rowPlans: Array<{
+      row: number;
+      dto: BulkCreateWorkerRowDto;
+      finalCode: string;
+      role: BulkWorkerRole;
+      pin: string;
+      pinGenerated: boolean;
+      skipReason?: string;
+    }> = [];
+
+    rows.forEach((dto, idx) => {
+      const row = idx + 1;
+      const name = dto.name?.trim() ?? '';
+      const rawCode = dto.employeeCode?.trim() ?? '';
+      const finalCode = this.withCodePrefix(rawCode, prefix);
+      const role = (dto.role?.toUpperCase() as BulkWorkerRole) || 'WORKER';
+      const providedPin = dto.pin?.trim() ?? '';
+
+      let skipReason: string | undefined;
+      if (!name) {
+        skipReason = '이름이 비어 있습니다';
+      } else if (!rawCode) {
+        skipReason = '사번이 비어 있습니다';
+      } else if (role === 'ADMIN' && !callerIsMaster) {
+        skipReason = '관리자(ADMIN) 계정은 마스터 관리자만 일괄 등록할 수 있습니다';
+      } else if (role !== 'WORKER' && !providedPin) {
+        skipReason = '감독관/관리자 행은 PIN이 필수입니다';
+      } else if (providedPin && (providedPin.length < 4 || providedPin.length > 20)) {
+        skipReason = 'PIN은 4~20자여야 합니다';
+      } else if (seenCodes.has(finalCode.toUpperCase())) {
+        skipReason = `배치 내 사번 '${finalCode}' 중복`;
+      }
+
+      if (!skipReason) seenCodes.add(finalCode.toUpperCase());
+
+      // WORKER 행 pin 미지정 → 난수 4자리 (0000~9999, 선행 0 유지)
+      const pinGenerated = !skipReason && role === 'WORKER' && !providedPin;
+      const pin = pinGenerated ? String(randomInt(0, 10000)).padStart(4, '0') : providedPin;
+
+      rowPlans.push({ row, dto: { ...dto, name, employeeCode: rawCode }, finalCode, role, pin, pinGenerated, skipReason });
+    });
+
+    // 2) 행별 생성 — 기존 create() 재사용, 순차 처리 (플랜 상한 카운트가 행 단위로 정확히 반영되도록)
+    for (const plan of rowPlans) {
+      if (plan.skipReason) {
+        failed.push({ row: plan.row, employeeCode: plan.finalCode, name: plan.dto.name, reason: plan.skipReason });
+        continue;
+      }
+      try {
+        const worker = await this.create(
+          {
+            name: plan.dto.name,
+            employeeCode: plan.dto.employeeCode,
+            pin: plan.pin,
+            role: plan.role,
+            status: 'ACTIVE',
+            ...(siteId && { siteId }),
+          },
+          undefined,
+        );
+        created.push({
+          row: plan.row,
+          id: worker.id,
+          employeeCode: worker.employeeCode,
+          name: worker.name,
+          role: worker.role,
+          ...(plan.pinGenerated && { pin: plan.pin }),
+        });
+      } catch (e: any) {
+        // HttpException(중복/상한 등)은 한국어 메시지 그대로, 그 외는 코드만 노출
+        let reason: string;
+        if (e instanceof HttpException) {
+          const res = e.getResponse() as any;
+          reason = typeof res === 'string' ? res : (res?.message ?? e.message);
+          if (Array.isArray(reason)) reason = reason.join(', ');
+        } else if (e?.code === 'P2002') {
+          reason = `사번 '${plan.finalCode}'은(는) 이미 사용 중입니다`;
+        } else {
+          this.logger.error(
+            `Bulk worker create failed (row ${plan.row}, ${plan.finalCode}): ${e?.code ?? e?.message ?? 'unknown'}`,
+          );
+          reason = `등록 실패 (오류 ${e?.code ?? 'UNKNOWN'})`;
+        }
+        failed.push({ row: plan.row, employeeCode: plan.finalCode, name: plan.dto.name, reason });
+      }
+    }
+
+    this.logger.log(
+      `Bulk workers: ${created.length} created, ${failed.length} failed (site: ${siteId ?? 'none'}, by ${callerRole})`,
+    );
+    return { total: rows.length, created, failed };
+  }
+
+  /**
    * 작업자 정보 수정 (관리자 전용)
    */
   async update(id: string, dto: UpdateWorkerDto) {
@@ -296,13 +448,8 @@ export class WorkersService {
     // 사번 변경 시: create와 동일하게 센터 prefix 적용 후 중복 확인
     // (prefix 미적용 시 raw 사번이 센터 간 전역 충돌하던 갭 보완)
     if (dto.employeeCode && dto.employeeCode !== existing.employeeCode) {
-      let newCode = dto.employeeCode.trim();
-      if (existing.siteId) {
-        const prefix = await this.getWorkerCodePrefix(existing.siteId);
-        if (prefix && !newCode.toUpperCase().startsWith(prefix.toUpperCase())) {
-          newCode = `${prefix}-${newCode}`;
-        }
-      }
+      const prefix = existing.siteId ? await this.getWorkerCodePrefix(existing.siteId) : null;
+      const newCode = this.withCodePrefix(dto.employeeCode, prefix);
       const duplicate = await this.prisma.worker.findUnique({
         where: { employeeCode: newCode },
       });

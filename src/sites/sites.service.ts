@@ -2,6 +2,7 @@ import {
   Injectable,
   BadRequestException,
   ConflictException,
+  ForbiddenException,
   NotFoundException,
   Logger,
 } from '@nestjs/common';
@@ -10,6 +11,7 @@ import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateSiteDto } from './dto/create-site.dto';
 import { UpdateSiteDto } from './dto/update-site.dto';
+import { CloneSettingsDto } from './dto/clone-settings.dto';
 
 /**
  * 태블릿(키오스크) 자동발급 계정의 사번 접미어.
@@ -21,6 +23,30 @@ const KIOSK_CODE_SUFFIX = '-KIOSK';
 export interface KioskCredentials {
   employeeCode: string;
   pin: string;
+}
+
+/**
+ * #27 센터 설정 복제 시 TenantSettings JSON 에서 대상으로 병합하는 키 allowlist.
+ * ★ 제외(센터 고유 값): latitude / longitude / alertEmail / workerCodePrefix / notifications / noticeMessage
+ *   — 좌표·알림·사번접두어를 복제하면 폭염알림 오발송, 사번 충돌, 공지 오노출이 생기므로 절대 포함 금지.
+ */
+const CLONE_SETTINGS_ALLOWLIST = [
+  'workStartHour',
+  'workEndHour',
+  'kioskMode',
+  'autoScreensaverSeconds',
+  'classificationModes',
+] as const;
+
+/** 휴게시간 설정 사이트당 최대 개수 (break-configs.service validateMaxCount 와 동일) */
+const BREAK_CONFIG_MAX_PER_SITE = 10;
+
+/** POST /admin/sites/:id/clone-settings 응답 */
+export interface CloneSettingsResult {
+  classifications: { created: number; skipped: number };
+  breakConfigs: { created: number; skipped: number };
+  /** 실제 병합된 TenantSettings 키 (소스에 값이 있던 allowlist 키만) */
+  settingsMerged: string[];
 }
 
 @Injectable()
@@ -435,6 +461,233 @@ export class SitesService {
       migratedWorkers: result.count,
       migratedBreakConfigs: breakResult.count,
     };
+  }
+
+  /**
+   * #27 센터 설정 복제 — 소스 사업장의 분류/휴게시간/테넌트 설정을 대상 사업장으로 복사 (MASTER 전용).
+   *
+   * 트랜잭션 1개로 처리:
+   *  (a) Classification: 소스 활성 분류(소스가 대구처럼 siteId=NULL 전역분류를 쓰는 경우 OR-null 포함)를
+   *      대상 siteId 로 code/displayName/sortOrder 그대로 생성. (대상 siteId, code) 가 이미 있으면 skip
+   *      (복합 unique). includeChildren=false 면 최상위(code 에 언더스코어 없음)만.
+   *  (b) BreakConfig: 소스 활성 휴게시간 복사. 대상에 같은 label+시간이 있거나 대상 활성 휴게시간과
+   *      시간대가 겹치면 skip (break-configs.service 의 중복/겹침 불변식 유지). 사이트당 최대 10개.
+   *  (c) TenantSettings: 대상 JSON 에 allowlist 키만 병합 (CLONE_SETTINGS_ALLOWLIST 참고).
+   *      classificationModes 는 카테고리 단위 얕은 병합(대상에만 있는 카테고리 모드는 보존).
+   *
+   * 호출자는 컨트롤러에서 @Roles('MASTER') 로 제한되지만, 서비스에서도 방어적으로 한 번 더 검사한다.
+   */
+  async cloneSettings(
+    targetSiteId: string,
+    dto: CloneSettingsDto,
+    actor?: { sub?: string; role?: string },
+  ): Promise<CloneSettingsResult> {
+    if (actor && actor.role !== 'MASTER') {
+      throw new ForbiddenException('센터 설정 복제는 MASTER만 실행할 수 있습니다');
+    }
+
+    const sourceSiteId = dto.sourceSiteId;
+    if (sourceSiteId === targetSiteId) {
+      throw new BadRequestException('소스 사업장과 대상 사업장이 같습니다. 다른 사업장을 선택하세요.');
+    }
+
+    const [source, target] = await Promise.all([
+      this.prisma.site.findUnique({ where: { id: sourceSiteId }, select: { id: true, name: true, code: true } }),
+      this.prisma.site.findUnique({ where: { id: targetSiteId }, select: { id: true, name: true, code: true } }),
+    ]);
+    if (!source) throw new NotFoundException('소스 사업장을 찾을 수 없습니다');
+    if (!target) throw new NotFoundException('대상 사업장을 찾을 수 없습니다');
+
+    const includeChildren = dto.includeChildren === true;
+
+    const result = await this.prisma.$transaction(async (tx) => {
+      // ─────────── (a) Classification ───────────
+      // 소스가 전역(siteId=null) 분류를 쓰는 레거시 센터일 수 있으므로 classifications.service.findAll 과 동일한 OR-null 패턴.
+      const sourceClassifications = await tx.classification.findMany({
+        where: {
+          isActive: true,
+          OR: [{ siteId: sourceSiteId }, { siteId: null }],
+        },
+        select: { code: true, displayName: true, sortOrder: true, siteId: true },
+        orderBy: { sortOrder: 'asc' },
+      });
+
+      // 같은 code 가 소스 전용 + 전역 양쪽에 있으면 소스 전용(관리자가 손본 값)을 우선.
+      const byCode = new Map<string, { code: string; displayName: string; sortOrder: number }>();
+      for (const c of sourceClassifications) {
+        if (!includeChildren && c.code.includes('_')) continue; // 하위 납품처 제외
+        const prev = byCode.get(c.code);
+        if (!prev || c.siteId === sourceSiteId) {
+          byCode.set(c.code, { code: c.code, displayName: c.displayName, sortOrder: c.sortOrder });
+        }
+      }
+
+      const existingTarget = await tx.classification.findMany({
+        where: { siteId: targetSiteId },
+        select: { code: true },
+      });
+      const existingCodes = new Set(existingTarget.map((c) => c.code));
+
+      const toCreate = [...byCode.values()].filter((c) => !existingCodes.has(c.code));
+      let classificationsCreated = 0;
+      if (toCreate.length > 0) {
+        // (siteId, code) 복합 unique — 동시 생성 경쟁이 있어도 skipDuplicates 로 안전.
+        const created = await tx.classification.createMany({
+          data: toCreate.map((c) => ({
+            siteId: targetSiteId,
+            code: c.code,
+            displayName: c.displayName,
+            sortOrder: c.sortOrder,
+            isActive: true,
+          })),
+          skipDuplicates: true,
+        });
+        classificationsCreated = created.count;
+      }
+      const classificationsSkipped = byCode.size - classificationsCreated;
+
+      // ─────────── (b) BreakConfig ───────────
+      const sourceBreaks = await tx.breakConfig.findMany({
+        where: { siteId: sourceSiteId, isActive: true },
+        select: { label: true, startHour: true, startMin: true, endHour: true, endMin: true, sortOrder: true },
+        orderBy: { sortOrder: 'asc' },
+      });
+      const targetBreaks = await tx.breakConfig.findMany({
+        where: { siteId: targetSiteId },
+        select: { label: true, startHour: true, startMin: true, endHour: true, endMin: true, isActive: true },
+      });
+
+      const sameBreak = (
+        a: { label: string; startHour: number; startMin: number; endHour: number; endMin: number },
+        b: { label: string; startHour: number; startMin: number; endHour: number; endMin: number },
+      ) =>
+        a.label === b.label &&
+        a.startHour === b.startHour &&
+        a.startMin === b.startMin &&
+        a.endHour === b.endHour &&
+        a.endMin === b.endMin;
+      const overlaps = (
+        a: { startHour: number; startMin: number; endHour: number; endMin: number },
+        b: { startHour: number; startMin: number; endHour: number; endMin: number },
+      ) => {
+        const aS = a.startHour * 60 + a.startMin;
+        const aE = a.endHour * 60 + a.endMin;
+        const bS = b.startHour * 60 + b.startMin;
+        const bE = b.endHour * 60 + b.endMin;
+        return aS < bE && aE > bS;
+      };
+
+      // 대상의 현재 활성 휴게시간(+이번에 추가되는 것)과 비교 — 사이트당 최대 10개 유지.
+      const activeTargetBreaks = targetBreaks.filter((b) => b.isActive);
+      let breaksCreated = 0;
+      let breaksSkipped = 0;
+      for (const sb of sourceBreaks) {
+        const duplicate = targetBreaks.some((tb) => sameBreak(sb, tb));
+        const overlapping = activeTargetBreaks.some((tb) => overlaps(sb, tb));
+        if (duplicate || overlapping || activeTargetBreaks.length >= BREAK_CONFIG_MAX_PER_SITE) {
+          breaksSkipped++;
+          continue;
+        }
+        await tx.breakConfig.create({
+          data: {
+            siteId: targetSiteId,
+            label: sb.label,
+            startHour: sb.startHour,
+            startMin: sb.startMin,
+            endHour: sb.endHour,
+            endMin: sb.endMin,
+            sortOrder: sb.sortOrder,
+            isActive: true,
+          },
+        });
+        activeTargetBreaks.push({ ...sb, isActive: true });
+        breaksCreated++;
+      }
+
+      // ─────────── (c) TenantSettings (allowlist 병합) ───────────
+      const [sourceTs, targetTs] = await Promise.all([
+        tx.tenantSettings.findUnique({ where: { siteId: sourceSiteId }, select: { settings: true } }),
+        tx.tenantSettings.findUnique({ where: { siteId: targetSiteId }, select: { settings: true } }),
+      ]);
+      const sourceSettings = this.safeParseSettings(sourceTs?.settings);
+      const targetSettings = this.safeParseSettings(targetTs?.settings);
+
+      const settingsMerged: string[] = [];
+      const merged: Record<string, unknown> = { ...targetSettings };
+      for (const key of CLONE_SETTINGS_ALLOWLIST) {
+        const value = sourceSettings[key];
+        if (value === undefined || value === null) continue;
+        if (key === 'classificationModes') {
+          if (typeof value !== 'object' || Array.isArray(value) || Object.keys(value as object).length === 0) continue;
+          const sourceModes = value as Record<string, string>;
+          const targetModes =
+            targetSettings.classificationModes && typeof targetSettings.classificationModes === 'object'
+              ? (targetSettings.classificationModes as Record<string, string>)
+              : {};
+          // includeChildren=false 여도 모드는 카테고리(최상위 코드) 단위라 그대로 병합 가능.
+          merged.classificationModes = { ...targetModes, ...sourceModes };
+        } else {
+          merged[key] = value;
+        }
+        settingsMerged.push(key);
+      }
+
+      if (settingsMerged.length > 0) {
+        await tx.tenantSettings.upsert({
+          where: { siteId: targetSiteId },
+          update: { settings: JSON.stringify(merged) },
+          create: {
+            siteId: targetSiteId,
+            // 대상에 설정 행이 없던 경우(하위 사업장 등) customer-ops 와 같은 기본값 위에 병합.
+            settings: JSON.stringify({
+              timezone: 'Asia/Seoul',
+              language: 'ko',
+              workStartHour: 8,
+              workEndHour: 18,
+              kioskMode: true,
+              autoScreensaverSeconds: 600,
+              noticeMessage: '',
+              ...merged,
+            }),
+          },
+        });
+      }
+
+      return {
+        classifications: { created: classificationsCreated, skipped: classificationsSkipped },
+        breakConfigs: { created: breaksCreated, skipped: breaksSkipped },
+        settingsMerged,
+      } satisfies CloneSettingsResult;
+    });
+
+    this.logger.log(
+      `Site settings cloned ${source.code} → ${target.code}: ` +
+        `classifications +${result.classifications.created}/skip ${result.classifications.skipped}, ` +
+        `breaks +${result.breakConfigs.created}/skip ${result.breakConfigs.skipped}, ` +
+        `settings [${result.settingsMerged.join(',')}] (includeChildren=${includeChildren})`,
+    );
+    await this.logActivity(actor?.sub ?? 'SYSTEM', 'SITE_CLONE_SETTINGS', target.id, {
+      sourceSiteId: source.id,
+      sourceCode: source.code,
+      targetCode: target.code,
+      includeChildren,
+      ...result,
+    });
+
+    return result;
+  }
+
+  /** TenantSettings.settings(JSON 문자열) 안전 파싱 — 깨진 JSON/비객체는 {} */
+  private safeParseSettings(raw?: string | null): Record<string, unknown> {
+    if (!raw) return {};
+    try {
+      const parsed = JSON.parse(raw);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : {};
+    } catch {
+      return {};
+    }
   }
 
   /**

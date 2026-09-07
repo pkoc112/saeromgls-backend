@@ -91,6 +91,56 @@ export class DashboardController {
     return this.dashboardService.getWorkerStats(siteId, from, to);
   }
 
+  @Get('worker-time-summary')
+  @ApiOperation({ summary: '작업자별 작업시간 요약 (#36) — 근무일수/첫시작·마지막종료 평균/순작업시간/건수' })
+  @ApiQuery({ name: 'from', required: true, type: String })
+  @ApiQuery({ name: 'to', required: true, type: String })
+  @ApiQuery({ name: 'siteId', required: false, type: String })
+  getWorkerTimeSummary(
+    @Query('from') from: string,
+    @Query('to') to: string,
+    @Query('siteId') querySiteId: string | undefined,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    this.validateDateRange(from, to);
+    const siteId = resolveSiteId(user, querySiteId);
+    return this.dashboardService.getWorkerTimeSummary(from, to, siteId);
+  }
+
+  @Get('trends-by-classification')
+  @ApiOperation({ summary: '거래처(분류)별 일별 물동량 명세 (#37) — 피벗용' })
+  @ApiQuery({ name: 'from', required: true, type: String })
+  @ApiQuery({ name: 'to', required: true, type: String })
+  @ApiQuery({ name: 'siteId', required: false, type: String })
+  @ApiQuery({ name: 'classificationId', required: false, type: String })
+  getTrendsByClassification(
+    @Query('from') from: string,
+    @Query('to') to: string,
+    @Query('siteId') querySiteId: string | undefined,
+    @Query('classificationId') classificationId: string | undefined,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    this.validateDateRange(from, to);
+    const siteId = resolveSiteId(user, querySiteId);
+    return this.dashboardService.getTrendsByClassification(from, to, siteId, classificationId);
+  }
+
+  @Get('load-profile')
+  @ApiOperation({ summary: '시간대별 부하 프로필 (#50) — 요일×시각 평균 동시작업 인원' })
+  @ApiQuery({ name: 'from', required: true, type: String })
+  @ApiQuery({ name: 'to', required: true, type: String })
+  @ApiQuery({ name: 'siteId', required: false, type: String })
+  getLoadProfile(
+    @Query('from') from: string,
+    @Query('to') to: string,
+    @Query('siteId') querySiteId: string | undefined,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    this.validateDateRange(from, to);
+    const siteId = resolveSiteId(user, querySiteId);
+    return this.dashboardService.getLoadProfile(from, to, siteId);
+  }
+
   @Get('comparison')
   @ApiOperation({ summary: '전기 대비 증감 비교' })
   @ApiQuery({ name: 'from', required: true, type: String })

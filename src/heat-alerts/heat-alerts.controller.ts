@@ -125,6 +125,30 @@ export class HeatAlertsController {
   }
 
   /**
+   * 관리자: 월간 폭염 노출 리포트 (#39)
+   * 시간별 WBGT 단계 × 작업 구간(시작자+참여자, 중간마감/휴게 차감) 교차 →
+   * 작업자별 단계별 노출 분 + 기록 없는 시간(unknown) + 자가체크 알림 목록
+   */
+  @Get('admin/heat-records/exposure')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @ApiBearerAuth('jwt')
+  @Roles('ADMIN', 'SUPERVISOR')
+  @ApiOperation({
+    summary: '월간 폭염 노출 리포트',
+    description:
+      'month(YYYY-MM, KST) 한 달의 작업자별 폭염 단계별 순작업(노출) 분 + 기록 없음 분 + 알림 건수. ' +
+      '참여자(WorkAssignment) 포함, 기록 없는 시간대는 unknown. 미지정 시 이번 달.',
+  })
+  findMonthlyExposure(
+    @CurrentUser() user: JwtPayload,
+    @Query('siteId') querySiteId?: string,
+    @Query('month') month?: string,
+  ) {
+    const siteId = resolveSiteId(user, querySiteId);
+    return this.heatAlertsService.findMonthlyExposure(siteId, month);
+  }
+
+  /**
    * 관리자: 알림 목록 조회
    */
   @Get('admin/heat-alerts')

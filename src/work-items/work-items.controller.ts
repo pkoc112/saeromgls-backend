@@ -33,6 +33,7 @@ import {
   ForceEndWorkItemDto,
 } from './dto/update-work-item.dto';
 import { QueryWorkItemsDto } from './dto/query-work-items.dto';
+import { CreateManualWorkItemDto } from './dto/create-manual-work-item.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
@@ -246,6 +247,31 @@ export class WorkItemsController {
     // siteId 격리: ADMIN은 자기 사업장만, MASTER는 전체 또는 지정
     const siteId = resolveSiteId(user, query.siteId);
     return this.workItemsService.findAllForAdmin(query, siteId);
+  }
+
+  // ★ 고정 경로 — 'admin/work-items/:id' 계열보다 먼저 선언 (#35 수기 등록)
+  @Post('admin/work-items')
+  @UseGuards(JwtAuthGuard, RolesGuard, SubscriptionGateGuard)
+  @Roles('ADMIN')
+  @ApiBearerAuth('jwt')
+  @ApiTags('Admin Work Items')
+  @ApiOperation({
+    summary: '작업 기록 수기 등록 (관리자)',
+    description:
+      '이미 끝난 작업을 사후 등록합니다 (상태 ENDED). startedAt ≤ endedAt ≤ 현재 시각. ' +
+      '작업자/분류/참여자는 호출자 사업장(MASTER는 시작 작업자 사업장) 소속만 허용. 사유 필수(2~200자), 감사 로그 MANUAL_CREATE.',
+  })
+  @ApiResponse({ status: 201, description: '수기 등록 완료 (작업 객체 반환)' })
+  @ApiResponse({ status: 400, description: '시간 역전/미래 시각/유효하지 않은 작업자·분류' })
+  @ApiResponse({ status: 403, description: '다른 사업장 자원 사용 또는 권한 없음' })
+  createManualWorkItem(
+    @Body() dto: CreateManualWorkItemDto,
+    @CurrentUser() user: JwtPayload,
+    @Req() req: Request,
+  ) {
+    const ip = req.ip || req.socket.remoteAddress;
+    const userAgent = req.headers['user-agent'];
+    return this.workItemsService.createManualForAdmin(dto, user, ip, userAgent);
   }
 
   // ★ 반드시 'admin/work-items/:id' 보다 먼저 선언 — 아니면 'export'가 :id(ParseUUIDPipe)에 걸려 400

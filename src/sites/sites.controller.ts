@@ -23,6 +23,7 @@ import {
 import { SitesService } from './sites.service';
 import { CreateSiteDto } from './dto/create-site.dto';
 import { UpdateSiteDto } from './dto/update-site.dto';
+import { CloneSettingsDto } from './dto/clone-settings.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
@@ -36,7 +37,7 @@ export class SitesController {
 
   @Get('admin/sites')
   @UseGuards(JwtAuthGuard, RolesGuard)
-  @Roles('ADMIN')
+  @Roles('ADMIN', 'SUPERVISOR')
   @ApiBearerAuth('jwt')
   @ApiTags('Admin Sites')
   @ApiOperation({
@@ -158,6 +159,36 @@ export class SitesController {
       throw new ForbiddenException('자기 사업장으로만 이관할 수 있습니다');
     }
     return this.sitesService.migrateWorkersToSite(id);
+  }
+
+  /**
+   * #27 센터 설정 복제 — 소스 사업장의 분류/휴게시간/테넌트 설정을 `:id`(대상) 사업장으로 복사.
+   * 교차 테넌트 쓰기이므로 MASTER 전용.
+   */
+  @Post('admin/sites/:id/clone-settings')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('MASTER')
+  @ApiBearerAuth('jwt')
+  @HttpCode(HttpStatus.OK)
+  @ApiTags('Admin Sites')
+  @ApiOperation({
+    summary: '센터 설정 복제 (MASTER 전용)',
+    description:
+      '`sourceSiteId` 사업장의 활성 분류·활성 휴게시간·테넌트 설정(운영시간/키오스크/화면보호기/입력모드)을 `:id` 사업장으로 복사합니다. ' +
+      '이미 있는 분류 code / 같은 휴게시간은 건너뜁니다. 좌표·알림이메일·사번접두어·공지 등 센터 고유 값은 복제하지 않습니다. ' +
+      '응답: `{ classifications: { created, skipped }, breakConfigs: { created, skipped }, settingsMerged: string[] }`',
+  })
+  @ApiParam({ name: 'id', description: '대상(복제 받을) 사업장 UUID' })
+  @ApiResponse({ status: 200, description: '복제 완료 (생성/건너뜀 건수 및 병합된 설정 키)' })
+  @ApiResponse({ status: 400, description: '소스와 대상이 같음 / 유효성 실패' })
+  @ApiResponse({ status: 403, description: 'MASTER 아님' })
+  @ApiResponse({ status: 404, description: '소스 또는 대상 사업장 없음' })
+  cloneSettings(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: CloneSettingsDto,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    return this.sitesService.cloneSettings(id, dto, { sub: user.sub, role: user.role });
   }
 
   // ===================== Public Endpoints =====================

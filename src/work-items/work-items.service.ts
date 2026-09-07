@@ -15,9 +15,13 @@ import { EndWorkItemDto } from './dto/end-work-item.dto';
 import { PauseWorkItemDto } from './dto/pause-work-item.dto';
 import { UpdateWorkItemDto, VoidWorkItemDto, ForceEndWorkItemDto } from './dto/update-work-item.dto';
 import { QueryWorkItemsDto } from './dto/query-work-items.dto';
+import { CreateManualWorkItemDto } from './dto/create-manual-work-item.dto';
 import { Prisma } from '@prisma/client';
 
-import { calcNetWorkMinutes } from '../common/utils/net-work-minutes';
+import {
+  calcNetWorkMinutes,
+  loadBreakConfigResolver,
+} from '../common/utils/net-work-minutes';
 import { assertWorkItemOwnership } from '../common/utils/work-item-ownership';
 import type { JwtPayload } from '../common/decorators/current-user.decorator';
 
@@ -61,63 +65,13 @@ export class WorkItemsService {
       }
     }
 
-    // 작업자 존재 확인
-    const worker = await this.prisma.worker.findUnique({
-      where: { id: dto.startedByWorkerId },
+    // 작업자/분류 존재·활성 확인 + siteId 격리 + 참여자 검증 (수기 등록과 공용 헬퍼)
+    const { participantIds } = await this.validateCreateTargets({
+      startedByWorkerId: dto.startedByWorkerId,
+      classificationId: dto.classificationId,
+      participantWorkerIds: dto.participantWorkerIds,
+      requester,
     });
-    if (!worker || worker.status !== 'ACTIVE') {
-      throw new BadRequestException('유효하지 않은 작업자입니다');
-    }
-
-    // 분류 존재 확인
-    const classification = await this.prisma.classification.findUnique({
-      where: { id: dto.classificationId },
-    });
-    if (!classification || !classification.isActive) {
-      throw new BadRequestException('유효하지 않은 분류입니다');
-    }
-
-    // ★ siteId 격리: 비-MASTER 호출자는 자기 사업장 자원만 사용 가능.
-    //   - 작업자/분류가 "다른 사업장" 소속이면 차단 (cross-tenant 위조 작업 주입 방지)
-    //   - 작업자 siteId=NULL(레거시 미배정)·분류 siteId=NULL(전역 공통)은 호환 허용
-    const callerSiteId =
-      requester && requester.role !== 'MASTER' ? requester.siteId : undefined;
-    if (callerSiteId) {
-      if (worker.siteId && worker.siteId !== callerSiteId) {
-        throw new ForbiddenException('다른 사업장의 작업자로 작업을 시작할 수 없습니다');
-      }
-      if (classification.siteId && classification.siteId !== callerSiteId) {
-        throw new ForbiddenException('다른 사업장의 분류로 작업을 시작할 수 없습니다');
-      }
-    }
-
-    // ★ 참여자 검증: 존재 확인(기존 누락) + 동일 사업장만 허용
-    if (dto.participantWorkerIds && dto.participantWorkerIds.length > 0) {
-      const uniqueIds = [
-        ...new Set(
-          dto.participantWorkerIds.filter((id) => id !== dto.startedByWorkerId),
-        ),
-      ];
-      if (uniqueIds.length > 0) {
-        const participants = await this.prisma.worker.findMany({
-          where: { id: { in: uniqueIds } },
-          select: { id: true, siteId: true },
-        });
-        if (participants.length !== uniqueIds.length) {
-          throw new BadRequestException('존재하지 않는 참여 작업자가 포함되어 있습니다');
-        }
-        if (callerSiteId) {
-          const foreign = participants.find(
-            (p) => p.siteId && p.siteId !== callerSiteId,
-          );
-          if (foreign) {
-            throw new ForbiddenException(
-              '다른 사업장의 작업자는 참여자로 추가할 수 없습니다',
-            );
-          }
-        }
-      }
-    }
 
     // 트랜잭션으로 작업 + 배정 + 감사로그 동시 생성
     const workItem = await this.prisma.$transaction(async (tx) => {
@@ -144,20 +98,15 @@ export class WorkItemsService {
         },
       });
 
-      // 추가 참여자 배정
-      if (dto.participantWorkerIds && dto.participantWorkerIds.length > 0) {
-        const uniqueParticipants = dto.participantWorkerIds.filter(
-          (id) => id !== dto.startedByWorkerId,
-        );
-        for (const participantId of uniqueParticipants) {
-          await tx.workAssignment.create({
-            data: {
-              workItemId: item.id,
-              workerId: participantId,
-              role: 'PARTICIPANT',
-            },
-          });
-        }
+      // 추가 참여자 배정 (시작 작업자 제외·중복 제거된 목록)
+      for (const participantId of participantIds) {
+        await tx.workAssignment.create({
+          data: {
+            workItemId: item.id,
+            workerId: participantId,
+            role: 'PARTICIPANT',
+          },
+        });
       }
 
       // 감사 로그 생성
@@ -177,6 +126,86 @@ export class WorkItemsService {
 
     // 관계 포함하여 반환
     return this.findOneRaw(workItem.id);
+  }
+
+  /**
+   * 작업 생성 대상 검증 (create / createManualForAdmin 공용)
+   * - 작업자 존재·ACTIVE, 분류 존재·isActive 확인
+   * - ★ siteId 격리: 비-MASTER 호출자는 자기 사업장 자원만 사용 가능.
+   *   - 작업자/분류가 "다른 사업장" 소속이면 차단 (cross-tenant 위조 작업 주입 방지)
+   *   - 작업자 siteId=NULL(레거시 미배정)·분류 siteId=NULL(전역 공통)은 호환 허용
+   *   - MASTER: 기본은 격리 없음. masterScopeToWorkerSite=true 면 시작 작업자의 siteId 를
+   *     기준으로 분류/참여자 일치 검증 (수기 등록 — 서로 다른 사업장 자원 섞임 방지)
+   * - ★ 참여자 검증: 존재 확인 + 동일 사업장만 허용. 시작 작업자 제외·중복 제거한 목록 반환
+   */
+  private async validateCreateTargets(params: {
+    startedByWorkerId: string;
+    classificationId: string;
+    participantWorkerIds?: string[];
+    requester?: JwtPayload;
+    masterScopeToWorkerSite?: boolean;
+  }) {
+    const { startedByWorkerId, classificationId, participantWorkerIds, requester } = params;
+
+    // 작업자 존재 확인
+    const worker = await this.prisma.worker.findUnique({
+      where: { id: startedByWorkerId },
+    });
+    if (!worker || worker.status !== 'ACTIVE') {
+      throw new BadRequestException('유효하지 않은 작업자입니다');
+    }
+
+    // 분류 존재 확인
+    const classification = await this.prisma.classification.findUnique({
+      where: { id: classificationId },
+    });
+    if (!classification || !classification.isActive) {
+      throw new BadRequestException('유효하지 않은 분류입니다');
+    }
+
+    let callerSiteId: string | undefined;
+    if (requester && requester.role !== 'MASTER') {
+      callerSiteId = requester.siteId;
+    } else if (requester && params.masterScopeToWorkerSite) {
+      callerSiteId = worker.siteId ?? undefined;
+    }
+
+    if (callerSiteId) {
+      if (worker.siteId && worker.siteId !== callerSiteId) {
+        throw new ForbiddenException('다른 사업장의 작업자로 작업을 시작할 수 없습니다');
+      }
+      if (classification.siteId && classification.siteId !== callerSiteId) {
+        throw new ForbiddenException('다른 사업장의 분류로 작업을 시작할 수 없습니다');
+      }
+    }
+
+    let participantIds: string[] = [];
+    if (participantWorkerIds && participantWorkerIds.length > 0) {
+      participantIds = [
+        ...new Set(participantWorkerIds.filter((id) => id !== startedByWorkerId)),
+      ];
+      if (participantIds.length > 0) {
+        const participants = await this.prisma.worker.findMany({
+          where: { id: { in: participantIds } },
+          select: { id: true, siteId: true },
+        });
+        if (participants.length !== participantIds.length) {
+          throw new BadRequestException('존재하지 않는 참여 작업자가 포함되어 있습니다');
+        }
+        if (callerSiteId) {
+          const foreign = participants.find(
+            (p) => p.siteId && p.siteId !== callerSiteId,
+          );
+          if (foreign) {
+            throw new ForbiddenException(
+              '다른 사업장의 작업자는 참여자로 추가할 수 없습니다',
+            );
+          }
+        }
+      }
+    }
+
+    return { worker, classification, participantIds };
   }
 
   /**
@@ -631,7 +660,7 @@ export class WorkItemsService {
         where,
         include: {
           classification: { select: { id: true, code: true, displayName: true } },
-          startedByWorker: { select: { id: true, name: true, employeeCode: true } },
+          startedByWorker: { select: { id: true, name: true, employeeCode: true, siteId: true } },
           endedByWorker: { select: { id: true, name: true, employeeCode: true } },
           assignments: {
             include: { worker: { select: { id: true, name: true, employeeCode: true } } },
@@ -656,6 +685,12 @@ export class WorkItemsService {
       })),
     );
 
+    // 순작업시간 계산용 휴게시간 설정 (작업자 siteId 기준, NULL 작업자는 전역) — #33
+    const breaks = await loadBreakConfigResolver(this.prisma, [
+      siteId,
+      ...data.map((d) => d.startedByWorker?.siteId),
+    ]);
+
     const enriched = data.map((d) => {
       const adj = batchMap.get(d.id);
       return {
@@ -663,6 +698,17 @@ export class WorkItemsService {
         adjustedMinutes: adj?.adjustedMinutes ?? null,
         rawMinutes: adj?.rawMinutes ?? null,
         concurrentCount: adj?.concurrentCount ?? 1,
+        // 순작업시간(분): 중간마감·휴게시간 차감, Math.round. 진행 중이면 현재까지.
+        // 종료 시각 없는 VOID 는 의미 없으므로 null
+        netWorkMinutes:
+          d.status === 'VOID' && !d.endedAt
+            ? null
+            : calcNetWorkMinutes(
+                d.startedAt,
+                d.endedAt,
+                d.notes,
+                breaks.forSite(d.startedByWorker?.siteId),
+              ),
       };
     });
 
@@ -690,7 +736,7 @@ export class WorkItemsService {
       where,
       include: {
         classification: { select: { code: true, displayName: true } },
-        startedByWorker: { select: { name: true, employeeCode: true } },
+        startedByWorker: { select: { name: true, employeeCode: true, siteId: true } },
         endedByWorker: { select: { name: true, employeeCode: true } },
         assignments: {
           include: { worker: { select: { name: true, employeeCode: true } } },
@@ -699,6 +745,12 @@ export class WorkItemsService {
       orderBy: { startedAt: 'asc' },
       take: MAX_CSV_ROWS,
     });
+
+    // 순작업시간 계산용 휴게시간 설정 (작업자 siteId 기준, NULL 작업자는 전역) — #33
+    const breaks = await loadBreakConfigResolver(this.prisma, [
+      siteId,
+      ...items.map((i) => i.startedByWorker?.siteId),
+    ]);
 
     // CSV 헤더 (한글) — DashboardService.exportCsv 와 동일
     const headers = [
@@ -715,6 +767,7 @@ export class WorkItemsService {
       '시작시각',
       '종료시각',
       '작업시간(분)',
+      '순작업시간(분)',
       '참여자',
       '비고',
     ];
@@ -722,9 +775,19 @@ export class WorkItemsService {
     const rows = items.map((item) => {
       // 작업 시간 계산 (분)
       let durationMinutes = '';
+      // 순작업시간 (중간마감·휴게시간 차감, Math.round) — 종료된 작업만
+      let netMinutes = '';
       if (item.endedAt && item.startedAt) {
         const diff = (item.endedAt.getTime() - item.startedAt.getTime()) / 60000;
         durationMinutes = diff.toFixed(1);
+        netMinutes = String(
+          calcNetWorkMinutes(
+            item.startedAt,
+            item.endedAt,
+            item.notes,
+            breaks.forSite(item.startedByWorker?.siteId),
+          ),
+        );
       }
 
       // 참여자 목록
@@ -746,6 +809,7 @@ export class WorkItemsService {
         item.startedAt.toISOString(),
         item.endedAt?.toISOString() || '',
         durationMinutes,
+        netMinutes,
         participants,
         item.notes || '',
       ];
@@ -761,6 +825,107 @@ export class WorkItemsService {
     ].join('\n');
 
     return bom + csvContent;
+  }
+
+  /**
+   * 관리자: 작업 기록 수기 등록 (#35)
+   * - 이미 끝난 작업을 웹에서 사후 등록: 상태 ENDED, endedByWorkerId = 등록 관리자, deviceId 'web-manual'
+   * - 검증: startedAt ≤ endedAt ≤ now
+   * - 격리: create() 와 동일한 작업자/분류/참여자 siteId 검증 (MASTER 는 시작 작업자의 siteId 기준)
+   * - notes '[수기등록] '+사유, AuditLog action 'MANUAL_CREATE' (after JSON + reason)
+   * - 트랜잭션 (작업 + 배정 + 감사로그)
+   */
+  async createManualForAdmin(
+    dto: CreateManualWorkItemDto,
+    user: JwtPayload,
+    ip?: string,
+    userAgent?: string,
+  ) {
+    // 비-MASTER 는 사업장 배정 필수 (assertSiteOwnership 과 동일 정책 — 격리 불가 계정 차단)
+    if (user.role !== 'MASTER' && !user.siteId) {
+      throw new ForbiddenException('사업장이 배정되지 않은 계정은 작업을 등록할 수 없습니다');
+    }
+
+    const startedAt = new Date(dto.startedAt);
+    const endedAt = new Date(dto.endedAt);
+    if (Number.isNaN(startedAt.getTime()) || Number.isNaN(endedAt.getTime())) {
+      throw new BadRequestException('시작/종료 시간 형식이 올바르지 않습니다');
+    }
+    if (startedAt.getTime() > endedAt.getTime()) {
+      throw new BadRequestException('시작 시간이 종료 시간보다 늦을 수 없습니다');
+    }
+    if (endedAt.getTime() > Date.now()) {
+      throw new BadRequestException('종료 시간은 현재 시각 이전이어야 합니다');
+    }
+
+    const reason = dto.reason.trim();
+    if (reason.length < 2) {
+      throw new BadRequestException('사유는 2자 이상 200자 이하로 입력해주세요');
+    }
+
+    // 작업자/분류/참여자 존재·활성 + siteId 격리 (MASTER 는 시작 작업자 siteId 기준)
+    const { participantIds } = await this.validateCreateTargets({
+      startedByWorkerId: dto.startedByWorkerId,
+      classificationId: dto.classificationId,
+      participantWorkerIds: dto.participantWorkerIds,
+      requester: user,
+      masterScopeToWorkerSite: true,
+    });
+
+    const created = await this.prisma.$transaction(async (tx) => {
+      const item = await tx.workItem.create({
+        data: {
+          startedByWorkerId: dto.startedByWorkerId,
+          classificationId: dto.classificationId,
+          volume: dto.volume ?? 0,
+          quantity: dto.quantity ?? 0,
+          startedAt,
+          endedAt,
+          status: 'ENDED',
+          endedByWorkerId: user.sub,
+          deviceId: 'web-manual',
+          notes: `[수기등록] ${reason}`,
+        },
+      });
+
+      // 시작 작업자를 STARTER로 배정
+      await tx.workAssignment.create({
+        data: {
+          workItemId: item.id,
+          workerId: dto.startedByWorkerId,
+          role: 'STARTER',
+        },
+      });
+
+      // 추가 참여자 배정
+      for (const participantId of participantIds) {
+        await tx.workAssignment.create({
+          data: {
+            workItemId: item.id,
+            workerId: participantId,
+            role: 'PARTICIPANT',
+          },
+        });
+      }
+
+      // 감사 로그 (수기 등록)
+      await tx.auditLog.create({
+        data: {
+          actorWorkerId: user.sub,
+          workItemId: item.id,
+          action: 'MANUAL_CREATE',
+          after: JSON.stringify(item),
+          reason,
+          ip,
+          userAgent,
+        },
+      });
+
+      return item;
+    });
+
+    this.logger.log(`WorkItem manually created: ${created.id} by ${user.sub}`);
+    return this.findOneRaw(created.id);
   }
 
   /**

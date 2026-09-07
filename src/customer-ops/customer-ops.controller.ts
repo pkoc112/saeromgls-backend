@@ -19,6 +19,7 @@ import { CustomerOpsService } from './customer-ops.service';
 import {
   CreateSiteFromTemplateDto,
   CreateSupportCaseDto,
+  CustomerOverviewQueryDto,
   GenerateUsageSnapshotDto,
   ResolveSupportCaseDto,
   StartOnboardingRunDto,
@@ -31,10 +32,29 @@ import {
 export class CustomerOpsController {
   constructor(private readonly customerOpsService: CustomerOpsService) {}
 
+  // #42 from/to (KST YYYY-MM-DD, 기본 이번 달) → site.period 기간 집계 + unassigned 행
   @Get('overview')
   @Roles('MASTER')
-  getCustomerOverview(@Query('siteId') siteId?: string) {
-    return this.customerOpsService.getCustomerOverview(siteId);
+  getCustomerOverview(@Query() query: CustomerOverviewQueryDto) {
+    return this.customerOpsService.getCustomerOverview(query.siteId, query.from, query.to);
+  }
+
+  // #29 개통 준비도 — ADMIN 은 자기 사업장, MASTER 는 siteId 없으면 최상위 활성 센터 전체
+  @Get('readiness')
+  @Roles('ADMIN')
+  getReadiness(
+    @Query('siteId') querySiteId: string | undefined,
+    @CurrentUser() user: JwtPayload,
+  ) {
+    const siteId = resolveSiteId(user, querySiteId);
+    return this.customerOpsService.getReadiness(siteId);
+  }
+
+  // #30 센터 라이브 보드 — 최상위 활성 센터별 오늘/진행중/마지막 체감온도 보고
+  @Get('live-board')
+  @Roles('MASTER')
+  getLiveBoard() {
+    return this.customerOpsService.getLiveBoard();
   }
 
   @Get('operations-console')

@@ -8,6 +8,10 @@ jobs:
   backup:
     runs-on: ubuntu-latest
     steps:
+      - name: Record start time (heartbeat)
+        # #49 백업 heartbeat 보고용 시작 시각 (ISO 8601 UTC)
+        run: echo "STARTED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> $GITHUB_ENV
+
       - name: Install PostgreSQL 17 client (Neon runs PG 17)
         # Neon DB가 PostgreSQL 17.8이므로 pg_dump도 17 이상 필요 (major version mismatch 방지).
         # Ubuntu 24.04 default postgresql-client는 16.x이고 /usr/bin/pg_dump가 16을 가리킴.
@@ -66,3 +70,62 @@ jobs:
             echo "ERROR: backup smaller than 1KB ($BYTES bytes) — likely empty"
             exit 1
           fi
+
+      # ── #49 DB 백업 heartbeat — 성공/실패를 API(BackupJob)에 보고 ──
+      # 필요 Secrets: API_BASE_URL (예: https://saeromgls-api.vercel.app), CRON_SECRET (Vercel 환경변수와 동일 값)
+      # 미설정이면 경고만 남기고 생략. 30시간 이상 성공 보고가 없으면 subscription-check 크론이 운영자에게 메일 경고.
+      - name: Report backup success (heartbeat)
+        if: success()
+        # 보고 실패가 백업 성공 결과를 덮어쓰지 않도록 (실패 시 경고 어노테이션만, 아래 failure 스텝은 실행되지 않음)
+        continue-on-error: true
+        env:
+          API_BASE_URL: ${{ secrets.API_BASE_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          RUN_NUMBER: ${{ github.run_number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "$API_BASE_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "::warning::API_BASE_URL/CRON_SECRET secret 미설정 — heartbeat 보고 생략"
+            exit 0
+          fi
+          BYTES=$(stat -c%s "$FILENAME")
+          FINISHED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          BODY=$(jq -n \
+            --arg status success \
+            --arg startedAt "$STARTED_AT" \
+            --arg finishedAt "$FINISHED_AT" \
+            --argjson sizeBytes "$BYTES" \
+            --arg message "GitHub Actions run #${RUN_NUMBER} — ${FILENAME} · ${RUN_URL}" \
+            '{status:$status, finishedAt:$finishedAt, sizeBytes:$sizeBytes, message:$message}
+             + (if $startedAt == "" then {} else {startedAt:$startedAt} end)')
+          curl -sS --fail-with-body -X POST "${API_BASE_URL%/}/api/cron/backup-report" \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            -H "Content-Type: application/json" \
+            --data "$BODY" \
+            -w "\nHTTP %{http_code}\n"
+
+      - name: Report backup failure (heartbeat)
+        if: failure()
+        env:
+          API_BASE_URL: ${{ secrets.API_BASE_URL }}
+          CRON_SECRET: ${{ secrets.CRON_SECRET }}
+          RUN_NUMBER: ${{ github.run_number }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        run: |
+          if [ -z "$API_BASE_URL" ] || [ -z "$CRON_SECRET" ]; then
+            echo "::warning::API_BASE_URL/CRON_SECRET secret 미설정 — heartbeat 보고 생략"
+            exit 0
+          fi
+          FINISHED_AT=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+          BODY=$(jq -n \
+            --arg status failure \
+            --arg startedAt "$STARTED_AT" \
+            --arg finishedAt "$FINISHED_AT" \
+            --arg message "GitHub Actions run #${RUN_NUMBER} 실패 (dump/upload/verify 중 오류) · ${RUN_URL}" \
+            '{status:$status, finishedAt:$finishedAt, message:$message}
+             + (if $startedAt == "" then {} else {startedAt:$startedAt} end)')
+          curl -sS --fail-with-body -X POST "${API_BASE_URL%/}/api/cron/backup-report" \
+            -H "Authorization: Bearer $CRON_SECRET" \
+            -H "Content-Type: application/json" \
+            --data "$BODY" \
+            -w "\nHTTP %{http_code}\n"

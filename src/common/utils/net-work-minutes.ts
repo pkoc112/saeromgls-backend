@@ -1,38 +1,220 @@
+import type { PrismaClient } from '@prisma/client';
+
+/**
+ * 순작업시간(분) 계산 유틸 — 서버 집계 통일 (#33)
+ *
+ * 순작업시간 = (startedAt ~ endedAt|now) 총 시간
+ *   - 중간마감(PAUSED) 구간 (notes JSON { pauseHistory: [{pausedAt, resumedAt}] })
+ *   - 휴게시간 구간 (BreakConfig, KST 기준 매일 반복) 과 "실제 작업 구간"의 겹침
+ *
+ * 휴게시간 겹침 로직은 모바일 mobile/src/utils/time-utils.ts 의 breakOverlapMs 를 그대로 포팅.
+ * (KST 자정을 기준으로 하루씩 순회하며 각 휴게 구간과의 겹침을 합산)
+ *
+ * ※ 휴게 겹침은 중간마감을 제외한 "실제 작업 구간"에 대해서만 계산하므로
+ *   휴게시간 중 중간마감 상태였던 구간이 이중 차감되지 않는다.
+ *   (휴게·중간마감이 겹치지 않는 일반적인 경우 모바일 계산과 동일)
+ */
+
+/** 휴게시간 설정 최소 형태 (BreakConfig 모델의 시간 필드) */
+export interface BreakConfigLike {
+  startHour: number;
+  startMin: number;
+  endHour: number;
+  endMin: number;
+}
+
+/** KST = UTC+9 */
+const KST_OFFSET_MS = 9 * 60 * 60_000;
+const DAY_MS = 24 * 3_600_000;
+
+/**
+ * KST 자정(UTC 기준 ms)을 반환 — 서버 타임존에 무관하게 항상 KST 기준
+ */
+function kstDayStart(timestamp: number): number {
+  const kstDate = new Date(timestamp + KST_OFFSET_MS);
+  return (
+    Date.UTC(kstDate.getUTCFullYear(), kstDate.getUTCMonth(), kstDate.getUTCDate()) -
+    KST_OFFSET_MS
+  );
+}
+
+/**
+ * [rangeStart, rangeEnd] 구간과 휴게시간(KST, 매일 반복)의 겹침 총 밀리초
+ * — 모바일 breakOverlapMs 와 동일 로직
+ */
+export function breakOverlapMs(
+  rangeStart: number,
+  rangeEnd: number,
+  breakConfigs: readonly BreakConfigLike[] | undefined,
+): number {
+  if (!breakConfigs || breakConfigs.length === 0) return 0;
+  if (rangeEnd <= rangeStart) return 0;
+
+  let total = 0;
+  let dayBase = kstDayStart(rangeStart); // KST 자정 (UTC ms)
+
+  while (dayBase < rangeEnd) {
+    for (const b of breakConfigs) {
+      const bStart = dayBase + (b.startHour * 60 + b.startMin) * 60_000;
+      const bEnd = dayBase + (b.endHour * 60 + b.endMin) * 60_000;
+      const os = Math.max(bStart, rangeStart);
+      const oe = Math.min(bEnd, rangeEnd);
+      if (oe > os) total += oe - os;
+    }
+    dayBase += DAY_MS;
+  }
+
+  return total;
+}
+
+/**
+ * notes 의 pauseHistory 를 [pausedAt, resumedAt] ms 구간 목록으로 파싱
+ * - resumedAt 없으면 (종료된 작업) endedAt / (진행 중) now 까지 정지로 간주 — 기존 로직 유지
+ * - notes 가 JSON 이 아니면 빈 배열
+ */
+function parsePauseIntervals(
+  notes: string | null | undefined,
+  end: number,
+  hasEnded: boolean,
+): Array<[number, number]> {
+  if (!notes) return [];
+  try {
+    const parsed = JSON.parse(notes);
+    if (!Array.isArray(parsed?.pauseHistory)) return [];
+    const intervals: Array<[number, number]> = [];
+    for (const entry of parsed.pauseHistory) {
+      const pAt = entry?.pausedAt ? new Date(entry.pausedAt).getTime() : 0;
+      const rAt = entry?.resumedAt
+        ? new Date(entry.resumedAt).getTime()
+        : hasEnded
+          ? end
+          : Date.now();
+      if (pAt > 0 && Number.isFinite(rAt) && rAt > pAt) {
+        intervals.push([pAt, rAt]);
+      }
+    }
+    return intervals;
+  } catch {
+    // notes가 JSON이 아니면 무시
+    return [];
+  }
+}
+
 /**
  * pauseHistory를 기반으로 일시정지 시간을 차감한 순수 작업시간(분) 계산
  * - startedAt ~ endedAt(또는 now) 사이의 총 시간에서
- * - pauseHistory의 각 (pausedAt ~ resumedAt) 구간을 제외
- * - notes 필드에 JSON { pauseHistory: [{pausedAt, resumedAt}] } 형태로 저장됨
+ * - pauseHistory의 각 (pausedAt ~ resumedAt) 구간을 제외 (기존 로직)
+ * - breakConfigs 가 주어지면 실제 작업 구간과 휴게시간의 겹침을 추가 차감
+ * - 반올림: Math.round (분)
+ *
+ * @param breakConfigs 휴게시간 설정 (생략/빈 배열이면 휴게 차감 없음 — 기존 호출부 호환)
  */
 export function calcNetWorkMinutes(
   startedAt: Date,
   endedAt: Date | null,
   notes: string | null,
+  breakConfigs?: readonly BreakConfigLike[],
 ): number {
   const start = startedAt.getTime();
   const end = endedAt ? endedAt.getTime() : Date.now();
-  let totalMs = Math.max(0, end - start);
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return 0;
 
-  if (notes) {
-    try {
-      const parsed = JSON.parse(notes);
-      if (Array.isArray(parsed?.pauseHistory)) {
-        for (const entry of parsed.pauseHistory) {
-          const pAt = entry.pausedAt ? new Date(entry.pausedAt).getTime() : 0;
-          const rAt = entry.resumedAt
-            ? new Date(entry.resumedAt).getTime()
-            : endedAt
-              ? end
-              : Date.now();
-          if (pAt > 0 && rAt > pAt) {
-            totalMs -= rAt - pAt;
-          }
-        }
-      }
-    } catch {
-      // notes가 JSON이 아니면 무시
+  // 1) 중간마감 구간: [start, end] 로 클리핑 → 시작순 정렬 → 겹침 병합
+  const pauses = parsePauseIntervals(notes, end, !!endedAt)
+    .map(([p, r]): [number, number] => [Math.max(p, start), Math.min(r, end)])
+    .filter(([p, r]) => r > p)
+    .sort((a, b) => a[0] - b[0]);
+
+  const merged: Array<[number, number]> = [];
+  for (const iv of pauses) {
+    const last = merged[merged.length - 1];
+    if (last && iv[0] <= last[1]) {
+      last[1] = Math.max(last[1], iv[1]);
+    } else {
+      merged.push([iv[0], iv[1]]);
     }
   }
 
+  // 2) 실제 작업 구간 = [start, end] − 중간마감 구간
+  const activeSegments: Array<[number, number]> = [];
+  let cursor = start;
+  for (const [p, r] of merged) {
+    if (p > cursor) activeSegments.push([cursor, p]);
+    cursor = Math.max(cursor, r);
+  }
+  if (end > cursor) activeSegments.push([cursor, end]);
+
+  // 3) 각 작업 구간에서 휴게시간 겹침 차감
+  let totalMs = 0;
+  for (const [s, e] of activeSegments) {
+    totalMs += e - s - breakOverlapMs(s, e, breakConfigs);
+  }
+
   return Math.max(0, Math.round(totalMs / 60000));
+}
+
+/**
+ * 사업장별 휴게시간 설정 조회기
+ * - 규칙 (break-configs.service.findForMobile 과 동일): 사업장(siteId) 활성 설정이 1개 이상이면 그것을,
+ *   없으면 전역(siteId=null) 활성 설정으로 폴백
+ * - siteId 가 NULL(미배정 레거시 작업자)인 경우 → 전역 설정
+ */
+export interface BreakConfigResolver {
+  forSite(siteId: string | null | undefined): BreakConfigLike[];
+}
+
+/** 조회에 필요한 최소 Prisma 클라이언트 형태 (PrismaService 호환) */
+type BreakConfigPrisma = Pick<PrismaClient, 'breakConfig'>;
+
+/**
+ * 필요한 사업장들의 활성 휴게시간 설정을 1회 조회해 resolver 로 반환
+ *
+ * @param siteIds 조회 대상 사업장 ID 목록 (null/undefined 포함 가능 — 전역 설정은 항상 함께 조회)
+ *                빈 배열이면 전역 설정만 조회
+ */
+export async function loadBreakConfigResolver(
+  prisma: BreakConfigPrisma,
+  siteIds: Iterable<string | null | undefined>,
+): Promise<BreakConfigResolver> {
+  const wanted = Array.from(
+    new Set(Array.from(siteIds).filter((s): s is string => typeof s === 'string' && s.length > 0)),
+  );
+
+  const rows = await prisma.breakConfig.findMany({
+    where: {
+      isActive: true,
+      OR: [{ siteId: null }, ...(wanted.length > 0 ? [{ siteId: { in: wanted } }] : [])],
+    },
+    select: { siteId: true, startHour: true, startMin: true, endHour: true, endMin: true },
+    orderBy: { sortOrder: 'asc' },
+  });
+
+  const global: BreakConfigLike[] = [];
+  const bySite = new Map<string, BreakConfigLike[]>();
+  for (const r of rows) {
+    const cfg: BreakConfigLike = {
+      startHour: r.startHour,
+      startMin: r.startMin,
+      endHour: r.endHour,
+      endMin: r.endMin,
+    };
+    if (r.siteId) {
+      const list = bySite.get(r.siteId);
+      if (list) list.push(cfg);
+      else bySite.set(r.siteId, [cfg]);
+    } else {
+      global.push(cfg);
+    }
+  }
+
+  return {
+    forSite(siteId) {
+      if (siteId) {
+        const site = bySite.get(siteId);
+        // 멀티테넌트 fallback 규칙: 사업장 설정이 하나라도 있으면 그것만, 없으면 전역
+        if (site && site.length > 0) return site;
+      }
+      return global;
+    },
+  };
 }

@@ -4,6 +4,10 @@ import { Prisma } from '@prisma/client';
 import { CreateIncentivePolicyDto } from './dto/create-incentive-policy.dto';
 import { UpdateIncentivePolicyDto } from './dto/update-incentive-policy.dto';
 import { kstDateRange } from '../common/kst-date.util';
+import {
+  calcNetWorkMinutes,
+  loadBreakConfigResolver,
+} from '../common/utils/net-work-minutes';
 
 export interface WorkerRanking {
   workerId: string;
@@ -62,7 +66,6 @@ export class PerformanceService {
         completed_count: bigint;
         total_volume: number;
         total_quantity: bigint;
-        avg_duration_minutes: number | null;
         co_work_count: bigint;
       }[]
     >`
@@ -89,7 +92,6 @@ export class PerformanceService {
         COUNT(DISTINCT ap.work_item_id) as completed_count,
         COALESCE(SUM(ap.volume), 0) as total_volume,
         COALESCE(SUM(ap.quantity), 0) as total_quantity,
-        AVG(GREATEST(EXTRACT(EPOCH FROM (ap.ended_at - ap.started_at)), 0) / 60.0) as avg_duration_minutes,
         COUNT(DISTINCT CASE WHEN ap.is_coworker THEN ap.work_item_id END) as co_work_count
       FROM all_participations ap
       JOIN workers w ON w.id = ap.worker_id
@@ -98,14 +100,16 @@ export class PerformanceService {
       ORDER BY completed_count DESC
     `;
 
+    // 작업자별 평균 순작업시간 — 행 fetch 후 JS calcNetWorkMinutes 집계 (#33)
+    // (SQL AVG(ended_at - started_at) 대체: 중간마감·휴게시간 차감 반영, 반올림 Math.round)
+    const avgDurationMap = await this.buildAvgNetMinutesByWorker(fromDate, toDate, siteId);
+
     // 생산성 점수 및 인센티브 계산
     const result: WorkerRanking[] = rankings.map((r) => {
       const count = Number(r.completed_count);
       const volume = Number(r.total_volume);
       const quantity = Number(r.total_quantity);
-      const avgDuration = r.avg_duration_minutes
-        ? Math.round(Number(r.avg_duration_minutes) * 100) / 100
-        : null;
+      const avgDuration = avgDurationMap.get(r.worker_id) ?? null;
 
       const productivityScore =
         Math.round(
@@ -176,6 +180,73 @@ export class PerformanceService {
         : { name: '기본', weightCount: 10, weightVolume: 2, weightQuantity: 0.05 },
       rankings: result,
     };
+  }
+
+  /**
+   * 기간 내 종료 작업의 작업자별 평균 순작업시간(분) 맵 (시작자 + 공동작업자 모두 포함)
+   * - 순작업시간 = 총 시간 − 중간마감 − 휴게시간 겹침 (calcNetWorkMinutes)
+   * - 휴게시간은 작업이 발생한 사업장(시작 작업자 siteId) 기준, NULL 작업자는 전역 설정
+   * - 행 수가 많을 수 있어 최소 컬럼만 select
+   */
+  private async buildAvgNetMinutesByWorker(
+    fromDate: Date,
+    toDate: Date,
+    siteId?: string,
+  ): Promise<Map<string, number>> {
+    const rows = await this.prisma.workItem.findMany({
+      where: {
+        status: 'ENDED',
+        endedAt: { not: null },
+        startedAt: { gte: fromDate, lte: toDate },
+        ...(siteId && { startedByWorker: { OR: [{ siteId }, { siteId: null }] } }),
+      },
+      select: {
+        id: true,
+        startedByWorkerId: true,
+        startedAt: true,
+        endedAt: true,
+        notes: true,
+        startedByWorker: { select: { siteId: true } },
+        assignments: {
+          where: { role: { not: 'STARTER' } },
+          select: { workerId: true },
+        },
+      },
+    });
+
+    const breaks = await loadBreakConfigResolver(this.prisma, [
+      siteId,
+      ...rows.map((r) => r.startedByWorker?.siteId),
+    ]);
+
+    const agg = new Map<string, { sum: number; count: number }>();
+    const add = (workerId: string, minutes: number) => {
+      const cur = agg.get(workerId) ?? { sum: 0, count: 0 };
+      cur.sum += minutes;
+      cur.count += 1;
+      agg.set(workerId, cur);
+    };
+
+    for (const r of rows) {
+      const minutes = calcNetWorkMinutes(
+        r.startedAt,
+        r.endedAt,
+        r.notes,
+        breaks.forSite(r.startedByWorker?.siteId),
+      );
+      // 시작자 + 공동작업자(중복 제거) 모두 해당 작업의 순작업시간을 가짐
+      const participants = new Set<string>([
+        r.startedByWorkerId,
+        ...r.assignments.map((a) => a.workerId),
+      ]);
+      participants.forEach((wid) => add(wid, minutes));
+    }
+
+    const result = new Map<string, number>();
+    agg.forEach((v, wid) => {
+      if (v.count > 0) result.set(wid, Math.round(v.sum / v.count));
+    });
+    return result;
   }
 
   /**

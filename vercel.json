@@ -3,7 +3,10 @@
   "buildCommand": "npx prisma generate && npx tsc --noEmit && npm run build",
   "outputDirectory": "public",
   "rewrites": [
-    { "source": "/(.*)", "destination": "/api" }
+    {
+      "source": "/(.*)",
+      "destination": "/api"
+    }
   ],
   "crons": [
     {
@@ -25,6 +28,22 @@
     {
       "path": "/api/cron/invoice-generate",
       "schedule": "0 19 1 * *"
+    },
+    {
+      "path": "/api/cron/heat-forecast-notice",
+      "schedule": "0 21 * * *"
+    },
+    {
+      "path": "/api/cron/ops-digest",
+      "schedule": "30 1 * * *"
+    },
+    {
+      "path": "/api/cron/evening-notices",
+      "schedule": "0 11 * * *"
+    },
+    {
+      "path": "/api/cron/weekly-summary",
+      "schedule": "0 15 * * 0"
     }
   ]
 }

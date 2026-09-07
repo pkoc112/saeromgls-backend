@@ -61,6 +61,23 @@ export class StartOnboardingRunDto {
   siteId: string;
 }
 
+/** #42 고객 운영 콘솔 overview 쿼리 — from/to 는 KST 'YYYY-MM-DD' (생략 시 이번 달) */
+export class CustomerOverviewQueryDto {
+  @IsOptional()
+  @IsString()
+  siteId?: string;
+
+  @IsOptional()
+  @IsString()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'from은 YYYY-MM-DD 형식이어야 합니다' })
+  from?: string;
+
+  @IsOptional()
+  @IsString()
+  @Matches(/^\d{4}-\d{2}-\d{2}$/, { message: 'to는 YYYY-MM-DD 형식이어야 합니다' })
+  to?: string;
+}
+
 export class UpdateOnboardingRunDto {
   @IsOptional()
   @IsInt()
@@ -150,6 +167,41 @@ export class UpsertTenantSettingsDto {
   @IsOptional()
   @IsObject()
   classificationModes?: Record<string, string>;
+
+  // 알림 수신자 설정 (#25 알림 허브) — 이벤트별 수신 이메일 + 요약 메일 토글.
+  // { default?: string[]; heat?: string[]; stuck_work?: string[]; subscription?: string[]; summary?: string[];
+  //   summaryDaily?: boolean; summaryWeekly?: boolean } — whitelist 때문에 여기 없으면 strip 됨.
+  @IsOptional()
+  @IsObject()
+  notifications?: Record<string, unknown>;
+
+  // #45 센터 연락처·메모 (MASTER 운영 콘솔 '담당자·메모' 컬럼) — 기존 settings 와 병합 저장
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  contactName?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(30)
+  contactPhone?: string;
+
+  /** 태블릿 기기명 (예: "Galaxy Tab S9 (SM-X710)") */
+  @IsOptional()
+  @IsString()
+  @MaxLength(100)
+  tabletDevice?: string;
+
+  /** 태블릿 설치일 (자유 형식, 예: "2026-06-10") */
+  @IsOptional()
+  @IsString()
+  @MaxLength(20)
+  tabletInstalledAt?: string;
+
+  @IsOptional()
+  @IsString()
+  @MaxLength(500)
+  siteMemo?: string;
 
   @IsOptional()
   @IsObject()

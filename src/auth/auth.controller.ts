@@ -31,6 +31,7 @@ import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { RegisterDto } from './dto/register.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
 import { UpdateMeDto } from './dto/update-me.dto';
+import { VerifyPinDto } from './dto/verify-pin.dto';
 import { JwtAuthGuard } from './jwt-auth.guard';
 
 @Controller()
@@ -65,6 +66,29 @@ export class AuthController {
     const ip = req.ip || req.headers['x-forwarded-for']?.toString();
     const ua = req.headers['user-agent'];
     return this.authService.validatePin(dto.workerId, dto.pin, ip, ua);
+  }
+
+  @Post('mobile/auth/verify-pin')
+  @HttpCode(HttpStatus.OK)
+  @UseGuards(JwtAuthGuard)
+  @ApiBearerAuth()
+  @ApiTags('Mobile Auth')
+  @ApiOperation({
+    summary: '키오스크 관리 동작 PIN 확인 (#26) — 사이트 내 관리자 PIN 대조, 토큰 재발급 없음',
+  })
+  @ApiBody({ type: VerifyPinDto })
+  @ApiResponse({ status: 200, description: '{ ok: true, role, name }' })
+  @ApiResponse({ status: 401, description: '관리자 PIN 불일치 / 5회 실패 잠금' })
+  // 브루트포스 방어: IP당 분당 10회 (+ 호출 계정 기준 5회 연속 실패 시 30분 잠금)
+  @Throttle({ default: { limit: 10, ttl: 60_000 } })
+  async verifyAdminPin(
+    @Body() dto: VerifyPinDto,
+    @CurrentUser() user: JwtPayload,
+    @Req() req: Request,
+  ) {
+    const ip = req.ip || req.headers['x-forwarded-for']?.toString();
+    const ua = req.headers['user-agent'];
+    return this.authService.verifyAdminPin(user, dto.pin, ip, ua);
   }
 
   @Post('auth/refresh')

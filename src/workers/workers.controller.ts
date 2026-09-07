@@ -26,6 +26,7 @@ import { Throttle } from '@nestjs/throttler';
 import { WorkersService } from './workers.service';
 import { CreateWorkerDto } from './dto/create-worker.dto';
 import { UpdateWorkerDto } from './dto/update-worker.dto';
+import { BulkCreateWorkersDto, BULK_WORKERS_MAX_ROWS } from './dto/bulk-create-workers.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
@@ -78,6 +79,39 @@ export class WorkersController {
   ) {
     const siteId = resolveSiteId(user, querySiteId);
     return this.workersService.migrateJobTracksV3(siteId);
+  }
+
+  // ★ 고정 경로('bulk')는 'admin/workers/:id' 계열보다 먼저 선언 (라우트 매칭 순서)
+  @Post('admin/workers/bulk')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN')
+  @ApiBearerAuth('jwt')
+  @ApiTags('Admin Workers')
+  @ApiOperation({
+    summary: `작업자 일괄 등록 (최대 ${BULK_WORKERS_MAX_ROWS}행, 행별 성공/실패 반환)`,
+    description:
+      'body { rows: [{ name, employeeCode, role?, pin? }], siteId? }. ' +
+      'WORKER 행은 pin 생략 시 난수 4자리를 생성해 created[].pin에 평문 1회 반환. ' +
+      'SUPERVISOR/ADMIN 행은 pin 필수, ADMIN 행은 MASTER 호출자만 가능. ' +
+      'ADMIN 호출자는 자기 사업장 강제(siteId 무시/불일치 시 403), MASTER는 siteId 지정.',
+  })
+  @ApiResponse({
+    status: 201,
+    description: '{ total, created: [{ row, id, employeeCode, name, role, pin? }], failed: [{ row, employeeCode, name, reason }] }',
+  })
+  @ApiResponse({ status: 400, description: 'DTO 검증 실패 (행 수 초과, 필드 형식 오류)' })
+  @ApiResponse({ status: 403, description: '다른 사업장 siteId 지정 (ADMIN)' })
+  bulkCreate(
+    @CurrentUser() user: JwtPayload,
+    @Body() dto: BulkCreateWorkersDto,
+  ) {
+    // ADMIN이 다른 사업장 siteId를 직접 지정하려 하면 차단 (create와 동일 정책)
+    if (user.role !== 'MASTER' && dto.siteId && dto.siteId !== user.siteId) {
+      throw new ForbiddenException('자신의 사업장에만 작업자를 추가할 수 있습니다');
+    }
+    // MASTER: body.siteId(없으면 미배정), ADMIN: JWT siteId 강제 (미배정 계정은 403)
+    const siteId = resolveSiteId(user, dto.siteId);
+    return this.workersService.bulkCreate(dto.rows, siteId, user.role);
   }
 
   @Post('admin/workers')

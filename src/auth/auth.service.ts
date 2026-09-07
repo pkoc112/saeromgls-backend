@@ -14,6 +14,7 @@ import { JwtPayload } from '../common/decorators/current-user.decorator';
 import { RegisterDto } from './dto/register.dto';
 import { encryptWorkerPII, decryptWorkerPII } from '../common/utils/pii.util';
 import { maskEmail } from '../common/utils/pii-mask';
+import { resolveSiteId } from '../common/utils/site-scope';
 
 @Injectable()
 export class AuthService {
@@ -1089,6 +1090,82 @@ export class AuthService {
         siteId: worker.siteId ?? null,
       },
     };
+  }
+
+  // ──────────────────────────────────────────────
+  // 키오스크 관리 동작 PIN 확인 (#26)
+  // 로그인된 태블릿(JWT)에서 로그아웃/캐시 초기화/기록 삭제 직전에
+  // "호출자 사이트 내 관리자(ADMIN/SUPERVISOR/MASTER) 중 하나의 PIN"과 대조.
+  // 토큰 재발급 없음 — 통과 여부만 반환 (1회성, 클라이언트가 동작마다 재호출).
+  //
+  // 범위: resolveSiteId(user) → MASTER는 전체, 그 외 JWT siteId 강제.
+  //   siteId 필터는 OR:[{siteId},{siteId:null}] 패턴(NULL 백필 전 기존 관리자 보호)
+  //   + MASTER 계정은 siteId 무관 포함. 태블릿 계정(<코드>-KIOSK, SUPERVISOR)도 포함 —
+  //   초대 관리자는 랜덤 PIN이라 신규 센터에서 실사용 PIN은 태블릿 계정뿐일 수 있음.
+  // 잠금: 시도는 호출 계정(user.sub) 기준 LoginHistory에 기록 → 기존 5회/30분 규칙 재사용.
+  // ──────────────────────────────────────────────
+  async verifyAdminPin(
+    user: JwtPayload,
+    pin: string,
+    ipAddress?: string,
+    userAgent?: string,
+  ) {
+    const PIN_MISMATCH = '관리자 PIN이 올바르지 않습니다';
+    // LoginHistory에서 로그인 시도와 구분 가능하도록 UA에 태그
+    const gateUserAgent = `pin-gate/${userAgent ?? ''}`;
+
+    const isLocked = await this.checkAccountLocked(user.sub);
+    if (isLocked) {
+      throw new UnauthorizedException({
+        message: 'PIN 입력 시도가 너무 많습니다. 30분 후에 다시 시도해 주세요.',
+        error: 'PIN_LOCKED',
+      });
+    }
+
+    // MASTER → undefined(전체), 그 외 → 자기 siteId(미배정이면 403)
+    const siteId = resolveSiteId(user);
+
+    const candidates = await this.prisma.worker.findMany({
+      where: {
+        status: 'ACTIVE',
+        role: { in: ['MASTER', 'ADMIN', 'SUPERVISOR'] },
+        ...(siteId
+          ? { OR: [{ siteId }, { siteId: null }, { role: 'MASTER' }] }
+          : {}),
+      },
+      select: { id: true, name: true, role: true, pin: true },
+      // 사이트 관리자(ADMIN) → MASTER → SUPERVISOR 순으로 대조 (알파벳 순, 조기 종료용)
+      orderBy: [{ role: 'asc' }, { name: 'asc' }],
+      take: 100,
+    });
+
+    let matched: { id: string; name: string; role: string } | null = null;
+    for (const c of candidates) {
+      if (!c.pin) continue;
+      let ok = false;
+      try {
+        ok = await bcrypt.compare(pin, c.pin);
+      } catch {
+        // 해시 형식이 아닌 잔존 데이터 등 — 불일치로 간주
+        ok = false;
+      }
+      if (ok) {
+        matched = { id: c.id, name: c.name, role: c.role };
+        break;
+      }
+    }
+
+    if (!matched) {
+      await this.recordLoginHistory(user.sub, false, ipAddress, gateUserAgent);
+      throw new UnauthorizedException({ message: PIN_MISMATCH, error: 'PIN_INVALID' });
+    }
+
+    await this.recordLoginHistory(user.sub, true, ipAddress, gateUserAgent);
+    this.logger.log(
+      `PIN gate passed: caller=${user.employeeCode} by ${matched.role}(${matched.id.slice(0, 8)})`,
+    );
+
+    return { ok: true, role: matched.role, name: matched.name };
   }
 
   // ──────────────────────────────────────────────
