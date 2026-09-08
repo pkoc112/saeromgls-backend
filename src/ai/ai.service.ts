@@ -2,7 +2,7 @@ import { Injectable, Logger, ServiceUnavailableException, BadRequestException } 
 import Anthropic from '@anthropic-ai/sdk';
 import { PrismaService } from '../prisma/prisma.service';
 import { Prisma } from '@prisma/client';
-import { calcNetWorkMinutes } from '../common/utils/net-work-minutes';
+import { calcNetWorkMinutes, loadBreakConfigResolver, type BreakConfigResolver } from '../common/utils/net-work-minutes';
 
 @Injectable()
 export class AiService {
@@ -50,7 +50,7 @@ export class AiService {
         endedAt: true,
         notes: true, // pauseHistory 파싱용
         classification: { select: { code: true } },
-        startedByWorker: { select: { employeeCode: true } },
+        startedByWorker: { select: { employeeCode: true, siteId: true } },
         assignments: {
           select: { worker: { select: { employeeCode: true } }, role: true },
         },
@@ -62,7 +62,8 @@ export class AiService {
     }
 
     // 통계 요약 데이터 준비
-    const summary = this.buildStatsSummary(workItems);
+    const breaks = await loadBreakConfigResolver(this.prisma, workItems.map((w) => w.startedByWorker.siteId));
+    const summary = this.buildStatsSummary(workItems, breaks);
 
     const prompt = `다음은 현장 작업 기록 시스템의 ${fromDate} ~ ${toDate} 기간 데이터 요약입니다.
 이 데이터를 분석하여 한국어로 주간 요약 리포트를 작성해주세요.
@@ -124,7 +125,7 @@ ${JSON.stringify(summary, null, 2)}
         endedAt: true,
         notes: true, // pauseHistory 파싱용
         classification: { select: { code: true } },
-        startedByWorker: { select: { employeeCode: true } },
+        startedByWorker: { select: { employeeCode: true, siteId: true } },
       },
     });
 
@@ -133,6 +134,7 @@ ${JSON.stringify(summary, null, 2)}
     }
 
     // 이상 탐지를 위한 데이터 준비 (중간마감 차감한 순수 작업시간 사용)
+    const breaks = await loadBreakConfigResolver(this.prisma, workItems.map((w) => w.startedByWorker.siteId));
     const analysisData = workItems.map((item) => ({
       status: item.status,
       classification: item.classification.code,
@@ -142,7 +144,7 @@ ${JSON.stringify(summary, null, 2)}
       started_at: item.startedAt.toISOString(),
       ended_at: item.endedAt?.toISOString() || null,
       duration_minutes: item.endedAt
-        ? calcNetWorkMinutes(item.startedAt, item.endedAt, item.notes)
+        ? calcNetWorkMinutes(item.startedAt, item.endedAt, item.notes, breaks.forSite(item.startedByWorker.siteId))
         : null,
     }));
 
@@ -397,7 +399,7 @@ ${JSON.stringify(dataContext, null, 2)}
         endedAt: true,
         notes: true, // pauseHistory 파싱용
         classification: { select: { code: true, displayName: true } },
-        startedByWorker: { select: { employeeCode: true } },
+        startedByWorker: { select: { employeeCode: true, siteId: true } },
         assignments: {
           select: { worker: { select: { employeeCode: true } } },
         },
@@ -408,6 +410,7 @@ ${JSON.stringify(dataContext, null, 2)}
       return { message: '해당 기간에 완료된 작업 데이터가 없습니다', period: `${fromDate} ~ ${toDate}` };
     }
 
+    const breaks = await loadBreakConfigResolver(this.prisma, workItems.map((w) => w.startedByWorker.siteId));
     // 납품처별 통계 집계
     const byDest: Record<string, {
       name: string;
@@ -430,7 +433,7 @@ ${JSON.stringify(dataContext, null, 2)}
       d.totalQuantity += item.quantity;
       if (item.endedAt) {
         // 순수 작업시간(중간마감 차감)
-        d.durations.push(calcNetWorkMinutes(item.startedAt, item.endedAt, item.notes));
+        d.durations.push(calcNetWorkMinutes(item.startedAt, item.endedAt, item.notes, breaks.forSite(item.startedByWorker.siteId)));
       }
       d.workerSet.add(item.startedByWorker.employeeCode);
       for (const a of item.assignments) {
@@ -645,9 +648,10 @@ CBM당 소요시간 기준으로 가장 효율적인/비효율적인 납품처 T
       endedAt: Date | null;
       notes?: string | null;
       classification: { code: string };
-      startedByWorker: { employeeCode: string };
+      startedByWorker: { employeeCode: string; siteId: string | null };
       assignments: Array<{ worker: { employeeCode: string }; role: string }>;
     }>,
+    breaks: BreakConfigResolver,
   ) {
     const total = workItems.length;
     const ended = workItems.filter((w) => w.status === 'ENDED').length;
@@ -678,7 +682,7 @@ CBM당 소요시간 기준으로 가장 효율적인/비효율적인 납품처 T
     // 작업 시간 통계 (분) — 중간마감(pauseHistory) 차감한 순수 작업시간
     const durations = workItems
       .filter((w) => w.endedAt)
-      .map((w) => calcNetWorkMinutes(w.startedAt, w.endedAt!, w.notes ?? null));
+      .map((w) => calcNetWorkMinutes(w.startedAt, w.endedAt!, w.notes ?? null, breaks.forSite(w.startedByWorker.siteId)));
 
     const avgDuration = durations.length > 0
       ? Math.round((durations.reduce((a, b) => a + b, 0) / durations.length) * 10) / 10

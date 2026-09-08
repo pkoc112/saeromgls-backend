@@ -22,9 +22,12 @@ import { Prisma } from '@prisma/client';
 import {
   calcNetWorkMinutes,
   loadBreakConfigResolver,
+  activeWorkSegments,
+  netMinutesOfSegments,
 } from '../common/utils/net-work-minutes';
 import { assertWorkItemOwnership } from '../common/utils/work-item-ownership';
 import type { JwtPayload } from '../common/decorators/current-user.decorator';
+import { resolveSiteId } from '../common/utils/site-scope';
 
 @Injectable()
 export class WorkItemsService {
@@ -280,7 +283,7 @@ export class WorkItemsService {
       where,
       include: {
         classification: { select: { id: true, code: true, displayName: true } },
-        startedByWorker: { select: { id: true, name: true, employeeCode: true } },
+        startedByWorker: { select: { id: true, name: true, employeeCode: true, siteId: true } },
         assignments: {
           include: { worker: { select: { id: true, name: true, employeeCode: true } } },
         },
@@ -288,6 +291,9 @@ export class WorkItemsService {
       orderBy: { startedAt: 'desc' },
       take: 200,
     });
+
+    const breaks = await loadBreakConfigResolver(this.prisma, data.map((d) => d.startedByWorker.siteId));
+    const asOf = new Date();
 
     // 동시작업 시간 비례 분배
     const batchMap = calculateBatchAdjustedTime(
@@ -307,7 +313,7 @@ export class WorkItemsService {
         ...d,
         adjustedMinutes: adj?.adjustedMinutes ?? null,
         concurrentCount: adj?.concurrentCount ?? 1,
-        netWorkMinutes: calcNetWorkMinutes(d.startedAt, d.endedAt, d.notes),
+        netWorkMinutes: calcNetWorkMinutes(d.startedAt, d.endedAt ?? asOf, d.notes, breaks.forSite(d.startedByWorker.siteId)),
       };
     });
   }
@@ -1137,6 +1143,48 @@ export class WorkItemsService {
     });
 
     return this.findOneForAdmin(updated.id);
+  }
+
+  /** 오늘(KST) 시작한 개인 참여 작업 전체. 화면 목록의 200건 제한과 별개로 집계한다. */
+  async getWorkerTodaySummary(workerId: string, requester: JwtPayload, querySiteId?: string) {
+    const siteId = resolveSiteId(requester, querySiteId);
+    const worker = await this.prisma.worker.findUnique({
+      where: { id: workerId },
+      select: { id: true, siteId: true, role: true },
+    });
+    if (!worker) throw new NotFoundException('작업자를 찾을 수 없습니다');
+    if (siteId && worker.siteId && worker.siteId !== siteId) {
+      throw new ForbiddenException('다른 사업장 작업자의 요약은 조회할 수 없습니다');
+    }
+    if (['master', 'admin'].includes(worker.role.toLowerCase())) {
+      throw new BadRequestException('현장 작업자의 요약만 조회할 수 있습니다');
+    }
+
+    const asOf = new Date();
+    const date = new Date(asOf.getTime() + 9 * 60 * 60_000).toISOString().slice(0, 10);
+    const scope = siteId ?? worker.siteId;
+    const items = await this.prisma.workItem.findMany({
+      where: {
+        startedAt: { gte: kstStartOfDay(date), lte: asOf },
+        status: { in: ['ACTIVE', 'PAUSED', 'ENDED'] },
+        startedByWorker: scope ? { OR: [{ siteId: scope }, { siteId: null }] } : { siteId: null },
+        OR: [{ startedByWorkerId: workerId }, { assignments: { some: { workerId } } }],
+      },
+      select: { startedAt: true, endedAt: true, notes: true, volume: true, quantity: true },
+    });
+    const breaks = await loadBreakConfigResolver(this.prisma, [worker.siteId]);
+    const segments = items.flatMap((item) => activeWorkSegments(
+      item.startedAt.getTime(),
+      Math.min(item.endedAt?.getTime() ?? asOf.getTime(), asOf.getTime()),
+      item.notes,
+    ));
+    return {
+      workerId, siteId: worker.siteId, date, asOf: asOf.toISOString(),
+      count: items.length,
+      volume: items.reduce((sum, item) => sum + (Number(item.volume) || 0), 0),
+      quantity: items.reduce((sum, item) => sum + (Number(item.quantity) || 0), 0),
+      minutes: netMinutesOfSegments(segments, breaks.forSite(worker.siteId)),
+    };
   }
 
   /**

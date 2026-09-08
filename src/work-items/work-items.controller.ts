@@ -104,6 +104,18 @@ export class WorkItemsController {
     return this.workItemsService.findActiveForMobile(workerId, status, siteId, from, to);
   }
 
+  @Get('mobile/work-items/worker-summary/:workerId')
+  @UseGuards(JwtAuthGuard)
+  @ApiTags('Mobile Work Items')
+  @ApiOperation({ summary: '오늘 시작한 작업자의 전체 참여 작업 요약 (KST)' })
+  getWorkerTodaySummary(
+    @Param('workerId', ParseUUIDPipe) workerId: string,
+    @CurrentUser() user: JwtPayload,
+    @Query('siteId') siteId?: string,
+  ) {
+    return this.workItemsService.getWorkerTodaySummary(workerId, user, siteId);
+  }
+
   @Post('mobile/work-items/:id/end')
   @UseGuards(JwtAuthGuard)
   @ApiTags('Mobile Work Items')

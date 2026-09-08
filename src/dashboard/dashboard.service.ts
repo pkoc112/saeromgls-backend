@@ -11,7 +11,8 @@ import { kstDateRange } from '../common/kst-date.util';
 import {
   calcNetWorkMinutes,
   loadBreakConfigResolver,
-  breakOverlapMs,
+  activeWorkSegments,
+  netMinutesOfSegments,
 } from '../common/utils/net-work-minutes';
 
 // ─────────────────────────────────────────────────────────────
@@ -68,72 +69,6 @@ function minutesToHHmm(minutes: number): string {
   const h = Math.floor(m / 60) % 24;
   const mm = m % 60;
   return `${String(h).padStart(2, '0')}:${String(mm).padStart(2, '0')}`;
-}
-
-/**
- * 작업 1건의 "실제 작업 구간" 목록 = [start, end] − 중간마감(pauseHistory) 구간
- * — calcNetWorkMinutes 의 1~2단계와 동일 로직 (notes JSON { pauseHistory: [{pausedAt, resumedAt}] })
- *   여러 작업의 구간을 union 해야 하므로(동시작업 batchId 중복계상 방지) 분 단위 결과가 아닌 구간을 돌려준다.
- */
-function activeSegmentsOf(
-  start: number,
-  end: number,
-  notes: string | null | undefined,
-  hasEnded: boolean,
-): Array<[number, number]> {
-  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return [];
-
-  const pauses: Array<[number, number]> = [];
-  if (notes) {
-    try {
-      const parsed = JSON.parse(notes);
-      if (Array.isArray(parsed?.pauseHistory)) {
-        for (const entry of parsed.pauseHistory) {
-          const pAt = entry?.pausedAt ? new Date(entry.pausedAt).getTime() : 0;
-          const rAt = entry?.resumedAt
-            ? new Date(entry.resumedAt).getTime()
-            : hasEnded
-              ? end
-              : Date.now();
-          if (pAt > 0 && Number.isFinite(rAt) && rAt > pAt) {
-            const p = Math.max(pAt, start);
-            const r = Math.min(rAt, end);
-            if (r > p) pauses.push([p, r]);
-          }
-        }
-      }
-    } catch {
-      // notes 가 JSON 이 아니면 중간마감 없음으로 간주
-    }
-  }
-
-  const merged = mergeIntervals(pauses);
-  const segments: Array<[number, number]> = [];
-  let cursor = start;
-  for (const [p, r] of merged) {
-    if (p > cursor) segments.push([cursor, p]);
-    cursor = Math.max(cursor, r);
-  }
-  if (end > cursor) segments.push([cursor, end]);
-  return segments;
-}
-
-/** 구간 목록 union (겹치거나 맞닿은 구간 병합) */
-function mergeIntervals(list: Array<[number, number]>): Array<[number, number]> {
-  const sorted = list
-    .filter(([s, e]) => e > s)
-    .map(([s, e]): [number, number] => [s, e])
-    .sort((a, b) => a[0] - b[0]);
-  const merged: Array<[number, number]> = [];
-  for (const iv of sorted) {
-    const last = merged[merged.length - 1];
-    if (last && iv[0] <= last[1]) {
-      last[1] = Math.max(last[1], iv[1]);
-    } else {
-      merged.push([iv[0], iv[1]]);
-    }
-  }
-  return merged;
 }
 
 /** 물동량 셀 (건수/CBM/수량) — #37 응답 타입 (컨트롤러 반환 타입에 노출되므로 export) */
@@ -810,7 +745,7 @@ export class DashboardService {
       const end = it.endedAt ? it.endedAt.getTime() : Math.min(now, start + OPEN_ITEM_CAP_MS);
       if (!Number.isFinite(start)) continue;
       const dayKey = kstDateKey(start);
-      const segs = activeSegmentsOf(start, end, it.notes, !!it.endedAt);
+      const segs = activeWorkSegments(start, end, it.notes);
       const participants = new Set<string>([
         it.startedByWorkerId,
         ...it.assignments.map((a) => a.workerId),
@@ -849,10 +784,7 @@ export class DashboardService {
       .map((w) => {
         const a = acc.get(w.id)!;
         const cfg = breaks.forSite(w.siteId);
-        let netMs = 0;
-        for (const [s, e] of mergeIntervals(a.segments)) {
-          netMs += e - s - breakOverlapMs(s, e, cfg);
-        }
+        const netMinutes = netMinutesOfSegments(a.segments, cfg);
 
         let firstSum = 0;
         let lastSum = 0;
@@ -870,7 +802,7 @@ export class DashboardService {
           workDays,
           firstStartAvg: workDays > 0 ? minutesToHHmm(firstSum / workDays) : null,
           lastEndAvg: workDays > 0 ? minutesToHHmm(lastSum / workDays) : null,
-          netMinutes: Math.max(0, Math.round(netMs / 60_000)),
+          netMinutes,
           itemCount: a.itemIds.size,
         };
       })

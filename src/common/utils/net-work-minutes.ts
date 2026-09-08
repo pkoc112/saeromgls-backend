@@ -7,12 +7,10 @@ import type { PrismaClient } from '@prisma/client';
  *   - 중간마감(PAUSED) 구간 (notes JSON { pauseHistory: [{pausedAt, resumedAt}] })
  *   - 휴게시간 구간 (BreakConfig, KST 기준 매일 반복) 과 "실제 작업 구간"의 겹침
  *
- * 휴게시간 겹침 로직은 모바일 mobile/src/utils/time-utils.ts 의 breakOverlapMs 를 그대로 포팅.
- * (KST 자정을 기준으로 하루씩 순회하며 각 휴게 구간과의 겹침을 합산)
+ * KST 자정을 기준으로 하루씩 순회하며 겹친 휴게 구간은 병합한다.
  *
  * ※ 휴게 겹침은 중간마감을 제외한 "실제 작업 구간"에 대해서만 계산하므로
  *   휴게시간 중 중간마감 상태였던 구간이 이중 차감되지 않는다.
- *   (휴게·중간마감이 겹치지 않는 일반적인 경우 모바일 계산과 동일)
  */
 
 /** 휴게시간 설정 최소 형태 (BreakConfig 모델의 시간 필드) */
@@ -26,6 +24,21 @@ export interface BreakConfigLike {
 /** KST = UTC+9 */
 const KST_OFFSET_MS = 9 * 60 * 60_000;
 const DAY_MS = 24 * 3_600_000;
+
+/** 겹치거나 맞닿은 구간의 합집합. 입력 배열은 변경하지 않는다. */
+export function mergeIntervals(list: Array<[number, number]>): Array<[number, number]> {
+  const sorted = list
+    .filter(([s, e]) => Number.isFinite(s) && Number.isFinite(e) && e > s)
+    .map(([s, e]): [number, number] => [s, e])
+    .sort((a, b) => a[0] - b[0]);
+  const merged: Array<[number, number]> = [];
+  for (const interval of sorted) {
+    const last = merged[merged.length - 1];
+    if (last && interval[0] <= last[1]) last[1] = Math.max(last[1], interval[1]);
+    else merged.push(interval);
+  }
+  return merged;
+}
 
 /**
  * KST 자정(UTC 기준 ms)을 반환 — 서버 타임존에 무관하게 항상 KST 기준
@@ -48,15 +61,20 @@ export function breakOverlapMs(
   breakConfigs: readonly BreakConfigLike[] | undefined,
 ): number {
   if (!breakConfigs || breakConfigs.length === 0) return 0;
-  if (rangeEnd <= rangeStart) return 0;
+  if (!Number.isFinite(rangeStart) || !Number.isFinite(rangeEnd) || rangeEnd <= rangeStart) return 0;
+
+  const periods = mergeIntervals(breakConfigs.map((b) => [
+    (Number(b.startHour) * 60 + Number(b.startMin)) * 60_000,
+    (Number(b.endHour) * 60 + Number(b.endMin)) * 60_000,
+  ]).filter(([s, e]) => s >= 0 && e <= DAY_MS) as Array<[number, number]>);
 
   let total = 0;
   let dayBase = kstDayStart(rangeStart); // KST 자정 (UTC ms)
 
   while (dayBase < rangeEnd) {
-    for (const b of breakConfigs) {
-      const bStart = dayBase + (b.startHour * 60 + b.startMin) * 60_000;
-      const bEnd = dayBase + (b.endHour * 60 + b.endMin) * 60_000;
+    for (const [s, e] of periods) {
+      const bStart = dayBase + s;
+      const bEnd = dayBase + e;
       const os = Math.max(bStart, rangeStart);
       const oe = Math.min(bEnd, rangeEnd);
       if (oe > os) total += oe - os;
@@ -75,7 +93,6 @@ export function breakOverlapMs(
 function parsePauseIntervals(
   notes: string | null | undefined,
   end: number,
-  hasEnded: boolean,
 ): Array<[number, number]> {
   if (!notes) return [];
   try {
@@ -86,9 +103,7 @@ function parsePauseIntervals(
       const pAt = entry?.pausedAt ? new Date(entry.pausedAt).getTime() : 0;
       const rAt = entry?.resumedAt
         ? new Date(entry.resumedAt).getTime()
-        : hasEnded
-          ? end
-          : Date.now();
+        : end;
       if (pAt > 0 && Number.isFinite(rAt) && rAt > pAt) {
         intervals.push([pAt, rAt]);
       }
@@ -100,40 +115,21 @@ function parsePauseIntervals(
   }
 }
 
-/**
- * pauseHistory를 기반으로 일시정지 시간을 차감한 순수 작업시간(분) 계산
- * - startedAt ~ endedAt(또는 now) 사이의 총 시간에서
- * - pauseHistory의 각 (pausedAt ~ resumedAt) 구간을 제외 (기존 로직)
- * - breakConfigs 가 주어지면 실제 작업 구간과 휴게시간의 겹침을 추가 차감
- * - 반올림: Math.round (분)
- *
- * @param breakConfigs 휴게시간 설정 (생략/빈 배열이면 휴게 차감 없음 — 기존 호출부 호환)
- */
-export function calcNetWorkMinutes(
-  startedAt: Date,
-  endedAt: Date | null,
-  notes: string | null,
-  breakConfigs?: readonly BreakConfigLike[],
-): number {
-  const start = startedAt.getTime();
-  const end = endedAt ? endedAt.getTime() : Date.now();
-  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return 0;
+/** 작업 구간에서 중간마감을 제외한다. 열린 중간마감은 전달받은 end까지 적용한다. */
+export function activeWorkSegments(
+  start: number,
+  end: number,
+  notes: string | null | undefined,
+): Array<[number, number]> {
+  if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) return [];
 
   // 1) 중간마감 구간: [start, end] 로 클리핑 → 시작순 정렬 → 겹침 병합
-  const pauses = parsePauseIntervals(notes, end, !!endedAt)
+  const pauses = parsePauseIntervals(notes, end)
     .map(([p, r]): [number, number] => [Math.max(p, start), Math.min(r, end)])
     .filter(([p, r]) => r > p)
     .sort((a, b) => a[0] - b[0]);
 
-  const merged: Array<[number, number]> = [];
-  for (const iv of pauses) {
-    const last = merged[merged.length - 1];
-    if (last && iv[0] <= last[1]) {
-      last[1] = Math.max(last[1], iv[1]);
-    } else {
-      merged.push([iv[0], iv[1]]);
-    }
-  }
+  const merged = mergeIntervals(pauses);
 
   // 2) 실제 작업 구간 = [start, end] − 중간마감 구간
   const activeSegments: Array<[number, number]> = [];
@@ -143,14 +139,33 @@ export function calcNetWorkMinutes(
     cursor = Math.max(cursor, r);
   }
   if (end > cursor) activeSegments.push([cursor, end]);
+  return activeSegments;
+}
 
-  // 3) 각 작업 구간에서 휴게시간 겹침 차감
+/** 개인별 동시작업은 합집합으로 계산하고 반올림은 합계 후 한 번만 수행한다. */
+export function netMinutesOfSegments(
+  segments: Array<[number, number]>,
+  breakConfigs?: readonly BreakConfigLike[],
+): number {
   let totalMs = 0;
-  for (const [s, e] of activeSegments) {
+  for (const [s, e] of mergeIntervals(segments)) {
     totalMs += e - s - breakOverlapMs(s, e, breakConfigs);
   }
 
   return Math.max(0, Math.round(totalMs / 60000));
+}
+
+/** 작업 한 건의 순작업시간. 중간마감과 휴게를 제외하고 분 단위 반올림. */
+export function calcNetWorkMinutes(
+  startedAt: Date,
+  endedAt: Date | null,
+  notes: string | null,
+  breakConfigs?: readonly BreakConfigLike[],
+): number {
+  return netMinutesOfSegments(
+    activeWorkSegments(startedAt.getTime(), endedAt?.getTime() ?? Date.now(), notes),
+    breakConfigs,
+  );
 }
 
 /**
