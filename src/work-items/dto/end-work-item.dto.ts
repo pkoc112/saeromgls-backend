@@ -1,4 +1,5 @@
 import { ApiProperty } from '@nestjs/swagger';
+import { WorkEventDto } from './work-event.dto';
 import {
   IsNotEmpty,
   IsOptional,
@@ -15,7 +16,7 @@ import {
  * 작업 종료 DTO
  * 종료 시 물량/수량 확정, 참여 작업자 추가 가능
  */
-export class EndWorkItemDto {
+export class EndWorkItemDto extends WorkEventDto {
   @ApiProperty({
     description: '종료 처리하는 작업자 ID',
     example: 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx',

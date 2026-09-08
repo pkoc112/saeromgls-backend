@@ -27,6 +27,7 @@ import { WorkItemsService } from './work-items.service';
 import { CreateWorkItemDto } from './dto/create-work-item.dto';
 import { EndWorkItemDto } from './dto/end-work-item.dto';
 import { PauseWorkItemDto } from './dto/pause-work-item.dto';
+import { WorkEventDto } from './dto/work-event.dto';
 import {
   UpdateWorkItemDto,
   VoidWorkItemDto,
@@ -181,10 +182,11 @@ export class WorkItemsController {
     @Query('resumedByWorkerId') resumedByWorkerId: string,
     @Req() req: Request,
     @CurrentUser() user: JwtPayload,
+    @Body() event: WorkEventDto,
   ) {
     const ip = req.ip || req.socket.remoteAddress;
     const userAgent = req.headers['user-agent'];
-    return this.workItemsService.resumeWorkItem(id, resumedByWorkerId, ip, userAgent, user);
+    return this.workItemsService.resumeWorkItem(id, resumedByWorkerId, ip, userAgent, user, event);
   }
 
   @Post('mobile/work-items/:id/restore')

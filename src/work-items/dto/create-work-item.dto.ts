@@ -11,7 +11,9 @@ import {
   Max,
 } from 'class-validator';
 
-export class CreateWorkItemDto {
+import { WorkEventDto } from './work-event.dto';
+
+export class CreateWorkItemDto extends WorkEventDto {
   @ApiProperty({
     description: '작업 시작 작업자 ID',
     example: 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx',

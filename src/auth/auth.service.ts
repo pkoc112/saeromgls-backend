@@ -400,9 +400,11 @@ export class AuthService {
       };
     } catch (err) {
       if (err instanceof UnauthorizedException) throw err;
-      throw new UnauthorizedException(
-        '리프레시 토큰이 만료되었거나 유효하지 않습니다',
-      );
+      if (err instanceof Error && ['TokenExpiredError', 'JsonWebTokenError', 'NotBeforeError'].includes(err.name)) {
+        throw new UnauthorizedException('리프레시 토큰이 만료되었거나 유효하지 않습니다');
+      }
+      // Database/infrastructure failures are not evidence of an expired session.
+      throw err;
     }
   }
 

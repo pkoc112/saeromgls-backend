@@ -13,6 +13,8 @@ import { AuditLogsService } from '../audit-logs/audit-logs.service';
 import { CreateWorkItemDto } from './dto/create-work-item.dto';
 import { EndWorkItemDto } from './dto/end-work-item.dto';
 import { PauseWorkItemDto } from './dto/pause-work-item.dto';
+import { WorkEventDto } from './dto/work-event.dto';
+import { resolveWorkEventTime } from './work-event-time';
 import { UpdateWorkItemDto, VoidWorkItemDto, ForceEndWorkItemDto } from './dto/update-work-item.dto';
 import { QueryWorkItemsDto } from './dto/query-work-items.dto';
 import { CreateManualWorkItemDto } from './dto/create-manual-work-item.dto';
@@ -28,6 +30,10 @@ import {
 import { assertWorkItemOwnership } from '../common/utils/work-item-ownership';
 import type { JwtPayload } from '../common/decorators/current-user.decorator';
 import { resolveSiteId } from '../common/utils/site-scope';
+
+type MobileWorkItem = Prisma.WorkItemGetPayload<{
+  include: { assignments: true; startedByWorker: { select: { siteId: true } } };
+}>;
 
 @Injectable()
 export class WorkItemsService {
@@ -64,6 +70,7 @@ export class WorkItemsService {
       });
 
       if (existing) {
+        await this.assertSiteOwnership(existing.id, requester);
         this.logger.log(`Idempotent hit: ${dto.idempotencyKey}`);
         return existing;
       }
@@ -82,6 +89,7 @@ export class WorkItemsService {
       const item = await tx.workItem.create({
         data: {
           startedByWorkerId: dto.startedByWorkerId,
+          startedAt: resolveWorkEventTime(dto.occurredAt),
           classificationId: dto.classificationId,
           volume: dto.volume ?? 0,
           quantity: dto.quantity ?? 0,
@@ -323,83 +331,64 @@ export class WorkItemsService {
    * 종료 시 물량/수량 확정, 추가 참여자 등록 가능
    */
   async endWorkItem(id: string, dto: EndWorkItemDto, ip?: string, userAgent?: string, requester?: JwtPayload) {
-    const workItem = await this.prisma.workItem.findUnique({
-      where: { id },
-      include: { assignments: true },
-    });
+    return this.withMobileEvent(id, 'END', dto, dto.endedByWorkerId, requester,
+      (tx, item) => this.applyEnd(id, dto, tx, item, ip, userAgent));
+  }
 
-    if (!workItem) {
-      throw new NotFoundException('작업을 찾을 수 없습니다');
-    }
-
-    // P0-4: 소유자 검증 — 주작업자/배정 참여자 또는 관리자만
-    if (requester) {
-      assertWorkItemOwnership({
-        requesterId: requester.sub,
-        requesterRole: requester.role,
-        workItem,
-        dtoWorkerId: (dto as any).endedByWorkerId,
-      });
-    }
-
+  private async applyEnd(id: string, dto: EndWorkItemDto, tx: Prisma.TransactionClient, workItem: MobileWorkItem, ip?: string, userAgent?: string) {
     if (workItem.status !== 'ACTIVE' && workItem.status !== 'PAUSED') {
       throw new BadRequestException('이미 종료되었거나 무효화된 작업입니다');
     }
 
     // P1-24: 작업 시간 역전 방지 — endedAt이 startedAt보다 이르지 않도록
-    const now = new Date();
-    const effectiveEndedAt = now.getTime() < workItem.startedAt.getTime() ? workItem.startedAt : now;
+    const effectiveEndedAt = resolveWorkEventTime(dto.occurredAt, workItem);
 
     const beforeState = JSON.stringify(workItem);
 
-    const updated = await this.prisma.$transaction(async (tx) => {
-      // 작업 종료 처리
-      const item = await tx.workItem.update({
-        where: { id },
-        data: {
-          endedByWorkerId: dto.endedByWorkerId,
-          endedAt: effectiveEndedAt,
-          status: 'ENDED',
-          volume: dto.volume !== undefined ? dto.volume : workItem.volume,
-          quantity: dto.quantity !== undefined ? dto.quantity : workItem.quantity,
-          notes: dto.notes !== undefined ? dto.notes : workItem.notes,
-        },
-      });
-
-      // 추가 참여자 배정
-      if (dto.participantWorkerIds && dto.participantWorkerIds.length > 0) {
-        const existingWorkerIds = workItem.assignments.map((a) => a.workerId);
-
-        for (const participantId of dto.participantWorkerIds) {
-          if (!existingWorkerIds.includes(participantId)) {
-            await tx.workAssignment.create({
-              data: {
-                workItemId: id,
-                workerId: participantId,
-                role: 'PARTICIPANT',
-              },
-            });
-          }
-        }
-      }
-
-      // 감사 로그
-      await tx.auditLog.create({
-        data: {
-          actorWorkerId: dto.endedByWorkerId,
-          workItemId: id,
-          action: 'END',
-          before: beforeState,
-          after: JSON.stringify(item),
-          ip,
-          userAgent,
-        },
-      });
-
-      return item;
+    // 작업 종료 처리
+    const item = await tx.workItem.update({
+      where: { id },
+      data: {
+        endedByWorkerId: dto.endedByWorkerId,
+        endedAt: effectiveEndedAt,
+        status: 'ENDED',
+        volume: dto.volume !== undefined ? dto.volume : workItem.volume,
+        quantity: dto.quantity !== undefined ? dto.quantity : workItem.quantity,
+        notes: dto.notes !== undefined ? dto.notes : workItem.notes,
+      },
     });
 
-    return this.findOneRaw(updated.id);
+    // 추가 참여자 배정
+    if (dto.participantWorkerIds && dto.participantWorkerIds.length > 0) {
+      const existingWorkerIds = workItem.assignments.map((a) => a.workerId);
+
+      for (const participantId of dto.participantWorkerIds) {
+        if (!existingWorkerIds.includes(participantId)) {
+          await tx.workAssignment.create({
+            data: {
+              workItemId: id,
+              workerId: participantId,
+              role: 'PARTICIPANT',
+            },
+          });
+        }
+      }
+    }
+
+    // 감사 로그
+    await tx.auditLog.create({
+      data: {
+        actorWorkerId: dto.endedByWorkerId,
+        workItemId: id,
+        action: 'END',
+        before: beforeState,
+        after: JSON.stringify({ ...item, _mobileEventId: dto.eventId }),
+        ip,
+        userAgent,
+      },
+    });
+
+    return item;
   }
 
   /**
@@ -407,31 +396,17 @@ export class WorkItemsService {
    * ACTIVE -> PAUSED 상태로 변경, pausedAt 시각을 notes에 JSON으로 기록
    */
   async pauseWorkItem(id: string, dto: PauseWorkItemDto, ip?: string, userAgent?: string, requester?: JwtPayload) {
-    const workItem = await this.prisma.workItem.findUnique({
-      where: { id },
-      include: { assignments: true },
-    });
+    return this.withMobileEvent(id, 'PAUSE', dto, dto.pausedByWorkerId, requester,
+      (tx, item) => this.applyPause(id, dto, tx, item, ip, userAgent));
+  }
 
-    if (!workItem) {
-      throw new NotFoundException('작업을 찾을 수 없습니다');
-    }
-
-    // P0-4: 소유자 검증
-    if (requester) {
-      assertWorkItemOwnership({
-        requesterId: requester.sub,
-        requesterRole: requester.role,
-        workItem,
-        dtoWorkerId: (dto as any).pausedByWorkerId,
-      });
-    }
-
+  private async applyPause(id: string, dto: PauseWorkItemDto, tx: Prisma.TransactionClient, workItem: MobileWorkItem, ip?: string, userAgent?: string) {
     if (workItem.status !== 'ACTIVE') {
       throw new BadRequestException('활성 상태의 작업만 중간마감할 수 있습니다');
     }
 
     const beforeState = JSON.stringify(workItem);
-    const now = new Date();
+    const now = resolveWorkEventTime(dto.occurredAt, workItem);
 
     // notes 필드에 pause 이력을 JSON으로 누적
     let pauseHistory: Array<{ pausedAt: string; pausedByWorkerId: string; resumedAt?: string }> = [];
@@ -452,63 +427,45 @@ export class WorkItemsService {
 
     const notesJson = JSON.stringify({ pauseHistory });
 
-    const updated = await this.prisma.$transaction(async (tx) => {
-      const item = await tx.workItem.update({
-        where: { id },
-        data: {
-          status: 'PAUSED',
-          notes: notesJson,
-        },
-      });
-
-      await tx.auditLog.create({
-        data: {
-          actorWorkerId: dto.pausedByWorkerId,
-          workItemId: id,
-          action: 'PAUSE',
-          before: beforeState,
-          after: JSON.stringify(item),
-          ip,
-          userAgent,
-        },
-      });
-
-      return item;
+    const item = await tx.workItem.update({
+      where: { id },
+      data: {
+        status: 'PAUSED',
+        notes: notesJson,
+      },
     });
 
-    return this.findOneRaw(updated.id);
+    await tx.auditLog.create({
+      data: {
+        actorWorkerId: dto.pausedByWorkerId,
+        workItemId: id,
+        action: 'PAUSE',
+        before: beforeState,
+        after: JSON.stringify({ ...item, _mobileEventId: dto.eventId }),
+        ip,
+        userAgent,
+      },
+    });
+
+    return item;
   }
 
   /**
    * 모바일: 중간마감 해제 (이어하기)
    * PAUSED -> ACTIVE 상태로 변경
    */
-  async resumeWorkItem(id: string, resumedByWorkerId: string, ip?: string, userAgent?: string, requester?: JwtPayload) {
-    const workItem = await this.prisma.workItem.findUnique({
-      where: { id },
-      include: { assignments: true },
-    });
+  async resumeWorkItem(id: string, resumedByWorkerId: string, ip?: string, userAgent?: string, requester?: JwtPayload, event: WorkEventDto = {}) {
+    return this.withMobileEvent(id, 'RESUME', event, resumedByWorkerId, requester,
+      (tx, item) => this.applyResume(id, resumedByWorkerId, tx, item, ip, userAgent, event));
+  }
 
-    if (!workItem) {
-      throw new NotFoundException('작업을 찾을 수 없습니다');
-    }
-
-    // P0-4: 소유자 검증 (이어하기 하는 작업자가 권한 있는지)
-    if (requester) {
-      assertWorkItemOwnership({
-        requesterId: requester.sub,
-        requesterRole: requester.role,
-        workItem,
-        dtoWorkerId: resumedByWorkerId,
-      });
-    }
-
+  private async applyResume(id: string, resumedByWorkerId: string, tx: Prisma.TransactionClient, workItem: MobileWorkItem, ip?: string, userAgent?: string, event: WorkEventDto = {}) {
     if (workItem.status !== 'PAUSED') {
       throw new BadRequestException('중간마감 상태의 작업만 이어하기할 수 있습니다');
     }
 
     const beforeState = JSON.stringify(workItem);
-    const now = new Date();
+    const now = resolveWorkEventTime(event.occurredAt, workItem);
 
     // notes의 pauseHistory에 resumedAt 기록
     let notesJson = workItem.notes;
@@ -527,31 +484,60 @@ export class WorkItemsService {
       }
     }
 
-    const updated = await this.prisma.$transaction(async (tx) => {
-      const item = await tx.workItem.update({
-        where: { id },
-        data: {
-          status: 'ACTIVE',
-          notes: notesJson,
-        },
-      });
-
-      await tx.auditLog.create({
-        data: {
-          actorWorkerId: resumedByWorkerId,
-          workItemId: id,
-          action: 'RESUME',
-          before: beforeState,
-          after: JSON.stringify(item),
-          ip,
-          userAgent,
-        },
-      });
-
-      return item;
+    const item = await tx.workItem.update({
+      where: { id },
+      data: {
+        status: 'ACTIVE',
+        notes: notesJson,
+      },
     });
 
-    return this.findOneRaw(updated.id);
+    await tx.auditLog.create({
+      data: {
+        actorWorkerId: resumedByWorkerId,
+        workItemId: id,
+        action: 'RESUME',
+        before: beforeState,
+        after: JSON.stringify({ ...item, _mobileEventId: event.eventId }),
+        ip,
+        userAgent,
+      },
+    });
+
+    return item;
+  }
+
+
+  private async withMobileEvent(
+    id: string, action: string, event: WorkEventDto, actorId: string,
+    requester: JwtPayload | undefined,
+    apply: (tx: Prisma.TransactionClient, item: MobileWorkItem) => Promise<unknown>,
+  ) {
+    await this.prisma.$transaction(async (tx) => {
+      // Lock before reading status/history, including retransmitted events.
+      await tx.$queryRaw`SELECT id FROM work_items WHERE id = ${id}::uuid FOR UPDATE`;
+      const item = await tx.workItem.findUnique({
+        where: { id }, include: { assignments: true, startedByWorker: { select: { siteId: true } } },
+      });
+      if (!item) throw new NotFoundException('작업을 찾을 수 없습니다');
+      if (requester) {
+        if (requester.role?.toLowerCase() !== 'master' &&
+          (!requester.siteId || (item.startedByWorker.siteId && item.startedByWorker.siteId !== requester.siteId))) {
+          throw new ForbiddenException('다른 사업장의 작업은 접근할 수 없습니다');
+        }
+        assertWorkItemOwnership({ requesterId: requester.sub, requesterRole: requester.role, workItem: item, dtoWorkerId: actorId });
+      }
+      if (event.eventId) {
+        const applied = await tx.auditLog.findFirst({
+          where: { workItemId: id, action, actorWorkerId: actorId,
+            after: { contains: `"_mobileEventId":${JSON.stringify(event.eventId)}` } },
+          select: { id: true },
+        });
+        if (applied) return;
+      }
+      await apply(tx, item);
+    });
+    return this.findOneRaw(id);
   }
 
   // ======================== Admin ========================
