@@ -29,7 +29,7 @@ function harness() {
         a.action === where.action && a.actorWorkerId === where.actorWorkerId && a.after.includes(where.after.contains)),
     },
     $queryRaw: async (sql: TemplateStringsArray, value: string) => {
-      expect(sql.join('?')).toMatch(/SELECT id FROM work_items WHERE id = \?::uuid FOR UPDATE/);
+      expect(sql.join('?')).toBe('SELECT id FROM work_items WHERE id = ? FOR UPDATE');
       expect(value).toBe(id); calls.push('lock'); return [{ id }];
     },
     $transaction: (run: any) => {

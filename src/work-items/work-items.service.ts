@@ -515,7 +515,7 @@ export class WorkItemsService {
   ) {
     await this.prisma.$transaction(async (tx) => {
       // Lock before reading status/history, including retransmitted events.
-      await tx.$queryRaw`SELECT id FROM work_items WHERE id = ${id}::uuid FOR UPDATE`;
+      await tx.$queryRaw`SELECT id FROM work_items WHERE id = ${id} FOR UPDATE`;
       const item = await tx.workItem.findUnique({
         where: { id }, include: { assignments: true, startedByWorker: { select: { siteId: true } } },
       });
