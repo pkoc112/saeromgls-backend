@@ -4,9 +4,11 @@ import { PassportModule } from '@nestjs/passport';
 import { AuthController } from './auth.controller';
 import { AuthService } from './auth.service';
 import { JwtStrategy } from './jwt.strategy';
+import { NotificationsModule } from '../common/notifications/notifications.module';
 
 @Module({
   imports: [
+    NotificationsModule,
     PassportModule.register({ defaultStrategy: 'jwt' }),
     JwtModule.register({
       secret: (() => {

@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Resend } from 'resend';
+import { NotificationsService } from '../common/notifications/notifications.service';
 import * as Sentry from '@sentry/node';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateHeatAlertDto } from './dto/create-heat-alert.dto';
@@ -64,17 +64,10 @@ interface HourlyForecast {
 @Injectable()
 export class HeatAlertsService {
   private readonly logger = new Logger(HeatAlertsService.name);
-  private readonly resend: Resend | null;
-  private readonly fromEmail: string;
-  private readonly notifyEmail: string;
-
-  constructor(private readonly prisma: PrismaService) {
-    const apiKey = process.env.RESEND_API_KEY;
-    this.resend = apiKey ? new Resend(apiKey) : null;
-    this.fromEmail = process.env.RESEND_FROM_EMAIL || 'noreply@sae-work.com';
-    // 운영자 이메일 — 환경 변수로 override 가능
-    this.notifyEmail = process.env.HEAT_ALERT_EMAIL || 'k20418852@gmail.com';
-  }
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly notifications: NotificationsService,
+  ) {}
 
   /** 날씨/WBGT 기본 좌표 (대구 동구 물류센터) — 센터 미설정 시 폴백 */
   private readonly DEFAULT_LAT = 35.92;
@@ -165,46 +158,18 @@ export class HeatAlertsService {
     return String(value ?? '').replace(/[<>&"]/g, (c) => map[c] ?? c);
   }
 
-  /** 콤마 구분 이메일 문자열 → trim·소문자·dedup 배열 ('@' 포함만 유효) */
-  private parseEmailList(raw: unknown): string[] {
-    if (typeof raw !== 'string') return [];
-    const out: string[] = [];
-    for (const part of raw.split(/[,;\s]+/)) {
-      const email = part.trim().toLowerCase();
-      if (email && email.includes('@') && !out.includes(email)) out.push(email);
-    }
-    return out;
-  }
-
   /**
-   * 폭염 알림 수신자 결정 (개통 분석 P0-2 → #11 다중 수신자):
-   * 해당 사업장 TenantSettings JSON 의 alertEmail(콤마 구분 복수 허용)을 우선 사용하고,
-   * 없으면 전역 운영자 이메일(HEAT_ALERT_EMAIL)로 폴백한다.
-   * → 멀티센터에서 각 센터 알림이 그 센터 담당자(들)에게 가도록.
-   * 운영자 이메일은 발송 시 항상 CC 로 붙는다 (operatorCc 참고).
+   * 공통 허브의 센터별 heat → default → alertEmail → 인증된 관리자 순서를 따른다.
+   * 폭염 신고는 수신자가 없어도 기존 정책대로 운영자에게 전달한다.
    */
   private async resolveRecipient(siteId: string | null): Promise<string[]> {
-    if (siteId) {
-      try {
-        const ts = await this.prisma.tenantSettings.findFirst({
-          where: { siteId },
-          select: { settings: true },
-        });
-        if (ts?.settings) {
-          const parsed = JSON.parse(ts.settings);
-          const emails = this.parseEmailList(parsed?.alertEmail);
-          if (emails.length > 0) return emails;
-        }
-      } catch (err) {
-        this.logger.warn(`alertEmail 조회 실패(site ${siteId}) — 전역 폴백: ${err}`);
-      }
-    }
-    return [this.notifyEmail.trim().toLowerCase()];
+    const recipients = await this.notifications.resolveRecipients(siteId, 'heat');
+    return recipients.length ? recipients : [this.notifications.masterEmail().trim().toLowerCase()];
   }
 
   /** 운영자(HEAT_ALERT_EMAIL) CC — to 에 이미 포함돼 있으면 중복 수신 방지를 위해 생략 */
   private operatorCc(to: string[]): string[] {
-    const op = this.notifyEmail.trim().toLowerCase();
+    const op = this.notifications.masterEmail().trim().toLowerCase();
     return op && !to.includes(op) ? [op] : [];
   }
 
@@ -278,14 +243,15 @@ export class HeatAlertsService {
       this.logger.warn(`Sentry capture 실패: ${err}`);
     }
 
-    // 3) Gmail 발송 (fire-and-forget) — 센터별 수신자(복수)로 라우팅 + 운영자 CC
+    // 3) 메일 발송 결과와 신고 저장 결과를 구분한다.
     const siteId = dto.siteId ?? null;
     const [recipients, siteName] = await Promise.all([
       this.resolveRecipient(siteId),
       this.resolveSiteName(siteId),
     ]);
     const cc = this.operatorCc(recipients);
-    if (this.resend) {
+    let emailSent = false;
+    if (this.notifications.isConfigured()) {
       const siteTag = siteName ? `[${siteName}]` : '';
       const subject = `[새롬GLS]${siteTag} 폭염 자가체크 알림 — ${dto.workerName} (${slotKo})`;
       const html = `
@@ -343,16 +309,13 @@ export class HeatAlertsService {
         </div>
       `;
       try {
-        const { error } = await this.resend.emails.send({
-          from: this.fromEmail,
+        const delivery = await this.notifications.sendMail({
           to: recipients,
           ...(cc.length > 0 ? { cc } : {}),
           subject,
           html,
         });
-        if (error) {
-          this.logger.warn(`Resend 발송 실패: ${JSON.stringify(error)}`);
-        }
+        emailSent = delivery.ok;
       } catch (err) {
         this.logger.warn(`Resend 발송 실패: ${err}`);
       }
@@ -360,7 +323,7 @@ export class HeatAlertsService {
       this.logger.warn('RESEND_API_KEY 미설정 — 이메일 발송 스킵');
     }
 
-    return { success: true, id: saved.id };
+    return { success: true, id: saved.id, emailSent };
   }
 
   // ────────────────────────────────────────────────────────────
@@ -517,7 +480,7 @@ export class HeatAlertsService {
   /**
    * 폭염 예보 사전 알림 (계약 [F]):
    * 최상위 활성 사이트를 순회하며 오늘(KST) 근무시간대 최고 WBGT 를 예측하고,
-   * 주의(31°) 이상이면 센터 수신자(alertEmail 복수 + 운영자 CC)에게 메일 발송.
+   * 주의(31°) 이상이면 센터 수신자(notifications.heat + 운영자 CC)에게 메일 발송.
    * - 좌표 미설정(coordsResolved=false) 센터 skip (대구 폴백 좌표로 타 지역 판정 금지)
    * - 구독 EXPIRED/SUSPENDED/CANCELLED 센터 skip (구독 기록 없는 센터는 발송 대상)
    * - 사이트별 try/catch → errors[] (한 센터 실패가 나머지를 막지 않음), 함수 자체는 throw 하지 않음
@@ -526,7 +489,7 @@ export class HeatAlertsService {
   async runHeatForecastNotices(): Promise<{ sent: number; skipped: number; errors: string[] }> {
     const result = { sent: 0, skipped: 0, errors: [] as string[] };
 
-    if (!this.resend) {
+    if (!this.notifications.isConfigured()) {
       this.logger.warn('RESEND_API_KEY 미설정 — 폭염 예보 알림 발송 불가');
       result.errors.push('RESEND_API_KEY 미설정 — 폭염 예보 알림 발송 불가');
       return result;
@@ -599,16 +562,14 @@ export class HeatAlertsService {
           peak,
         });
 
-        const { error } = await this.resend.emails.send({
-          from: this.fromEmail,
+        const delivery = await this.notifications.sendMail({
           to,
           ...(cc.length > 0 ? { cc } : {}),
           subject,
           html,
         });
-        if (error) {
-          result.errors.push(`${site.name}: 발송 실패 — ${JSON.stringify(error)}`);
-          this.logger.warn(`[heat-forecast] ${site.name}: Resend 발송 실패 ${JSON.stringify(error)}`);
+        if (!delivery.ok) {
+          result.errors.push(`${site.name}: 발송 실패 — ${delivery.error || 'unknown'}`);
           continue;
         }
         result.sent += 1;

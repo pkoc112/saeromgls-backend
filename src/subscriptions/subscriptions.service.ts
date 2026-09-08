@@ -915,7 +915,7 @@ export class SubscriptionsService {
             : null;
         if (digestItem) digestItems.push(digestItem);
 
-        // 발송 시점 정확 매칭 (오늘 KST 날짜 == 목표일) — 하루 1회 멱등
+        // 일일 크론의 발송일 매칭. 수동 재호출 시 중복 발송은 별도로 주의해야 한다.
         if (!noticeDays.includes(daysLeft)) continue;
 
         const recipients = await this.notifications.resolveRecipients(
@@ -960,8 +960,9 @@ export class SubscriptionsService {
       }
     }
 
-    // 5) MASTER 다이제스트 — 항목이 있을 때만, 마지막에 1통
-    if (digestItems.length > 0) {
+    // 5) MASTER 주간 다이제스트 — KST 월요일에만 발송 (서버의 UTC 요일과 구분).
+    const isDigestDay = new Date(`${todayKey}T00:00:00Z`).getUTCDay() === 1;
+    if (isDigestDay && digestItems.length > 0) {
       try {
         digestItems.sort((a, b) => a.daysLeft - b.daysLeft);
         const digest = this.buildMasterDigestMail(todayKey, digestItems);

@@ -60,6 +60,10 @@ export class NotificationsService {
     }
   }
 
+  isConfigured(): boolean {
+    return this.resend !== null;
+  }
+
   /** 운영자(MASTER) 이메일 — 환경 변수로 override 가능 */
   masterEmail(): string {
     return process.env.HEAT_ALERT_EMAIL || 'k20418852@gmail.com';
@@ -120,6 +124,10 @@ export class NotificationsService {
         const msg = error.message || JSON.stringify(error);
         this.logger.error(`메일 발송 실패: "${opts.subject}" → ${to.map(maskEmail).join(', ')}: ${msg}`);
         return { ok: false, error: msg };
+      }
+      if (!data?.id) {
+        this.logger.error('메일 서비스가 발송 접수 ID를 반환하지 않았습니다');
+        return { ok: false, error: 'missing-message-id' };
       }
       this.logger.log(
         `메일 발송 완료: "${opts.subject}" → ${to.map(maskEmail).join(', ')}` +

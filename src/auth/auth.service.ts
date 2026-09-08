@@ -3,12 +3,13 @@ import {
   UnauthorizedException,
   BadRequestException,
   NotFoundException,
+  ServiceUnavailableException,
   Logger,
 } from '@nestjs/common';
-import { randomUUID, randomBytes, createHash } from 'crypto';
+import { randomUUID, randomBytes, randomInt, createHash } from 'crypto';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
-import { Resend } from 'resend';
+import { NotificationsService } from '../common/notifications/notifications.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { JwtPayload } from '../common/decorators/current-user.decorator';
 import { RegisterDto } from './dto/register.dto';
@@ -28,25 +29,11 @@ export class AuthService {
   /** 메모리 기반 이메일 인증 코드 저장소 (email -> { code, expiresAt }) */
   // 검증코드: DB 저장 (서버리스 호환 — 인메모리 Map은 요청마다 초기화될 수 있음)
 
-  private readonly resend: Resend | null;
-  private readonly fromEmail: string;
-
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
+    private readonly notifications: NotificationsService,
   ) {
-    // Resend 초기화 (API 키가 없으면 null — 개발 환경 허용)
-    const resendApiKey = process.env.RESEND_API_KEY;
-    if (resendApiKey) {
-      this.resend = new Resend(resendApiKey);
-    } else {
-      this.resend = null;
-      if (process.env.NODE_ENV === 'production') {
-        this.logger.warn('RESEND_API_KEY 미설정 — 운영 환경에서 이메일 발송 불가');
-      }
-    }
-    this.fromEmail = process.env.RESEND_FROM_EMAIL || 'noreply@sae-work.com';
-
     // JWT 시크릿 강제 검증 (프로덕션 + 길이)
     const jwtSecret = process.env.JWT_SECRET;
     if (process.env.NODE_ENV === 'production') {
@@ -532,14 +519,14 @@ export class AuthService {
     const inviteUrl = `${baseUrl}/accept-invite?token=${token}`;
 
     // 초대 메일 자동 발송 (Resend) — 실패해도 inviteUrl은 반환되어 수동 전달 가능 (개통 분석 P1-7)
-    if (this.resend) {
+    let emailSent = false;
+    if (this.notifications.isConfigured()) {
       try {
         const roleKo = role === 'SUPERVISOR' ? '현장 반장' : '관리자';
         const safeName = name.replace(/[<>&"]/g, (c) =>
           ({ '<': '&lt;', '>': '&gt;', '&': '&amp;', '"': '&quot;' })[c] ?? c,
         );
-        const { error } = await this.resend.emails.send({
-          from: `새롬 GLS <${this.fromEmail}>`,
+        const delivery = await this.notifications.sendMail({
           to: [email],
           subject: `[새롬 GLS] ${roleKo} 초대 — 계정 설정을 완료해주세요`,
           html: `
@@ -563,20 +550,16 @@ export class AuthService {
             </div>
           `,
         });
-        if (error) {
-          this.logger.error(`초대 메일 발송 실패: ${JSON.stringify(error)}`);
-        } else {
-          this.logger.log(`초대 메일 발송 완료: ${maskEmail(email)}`);
-        }
+        emailSent = delivery.ok;
       } catch (err) {
         this.logger.error(`초대 메일 예외: ${err}`);
       }
     } else {
-      this.logger.log(`[DEV] 초대 링크 → ${maskEmail(email)} (Resend 미설정, 미발송)`);
+      this.logger.warn('메일 미설정 — 초대 링크를 직접 전달해야 합니다');
     }
 
     this.logger.log(`Admin invite created: ${maskEmail(email)} (${role})`);
-    return { inviteUrl, email, name, role, expiresAt };
+    return { inviteUrl, email, name, role, expiresAt, emailSent };
   }
 
   /** 초대 토큰 조회 (수락 페이지용 — 만료/사용 검증) */
@@ -705,23 +688,25 @@ export class AuthService {
   // 이메일 인증 코드 발급 (DB 저장 — 서버리스 호환)
   // ──────────────────────────────────────────────
   async sendVerificationCode(email: string) {
-    const code = Math.floor(100000 + Math.random() * 900000).toString();
+    if (!this.notifications.isConfigured()) {
+      throw new ServiceUnavailableException('메일 발송이 설정되지 않았습니다. 관리자에게 문의해주세요');
+    }
+    const code = randomInt(100000, 1000000).toString();
     const expiresAt = new Date(Date.now() + 10 * 60 * 1000); // 10분
 
     // 기존 코드 삭제 후 새로 저장
     await this.prisma.verificationCode.deleteMany({ where: { email } });
-    await this.prisma.verificationCode.create({
+    const stored = await this.prisma.verificationCode.create({
       data: { email, code, expiresAt },
     });
 
     // ── 이메일 발송 (Resend) ──────────────────────────────────
-    if (this.resend) {
-      try {
-        const { error } = await this.resend.emails.send({
-          from: `새롬 GLS <${this.fromEmail}>`,
-          to: [email],
-          subject: `[새롬 GLS] 이메일 인증 코드: ${code}`,
-          html: `
+    let emailSent = false;
+    try {
+      const delivery = await this.notifications.sendMail({
+        to: [email],
+        subject: '[새롬 GLS] 이메일 인증 코드',
+        html: `
             <div style="font-family:'Apple SD Gothic Neo',sans-serif;max-width:480px;margin:0 auto;padding:32px">
               <h2 style="color:#191F28;margin-bottom:8px">새롬 GLS 인증 코드</h2>
               <p style="color:#4E5968;font-size:14px;margin-bottom:24px">
@@ -734,26 +719,26 @@ export class AuthService {
                 본인이 요청하지 않았다면 이 메일을 무시해주세요.
               </p>
             </div>
-          `,
-        });
+        `,
+      });
 
-        if (error) {
-          this.logger.error(`Resend 발송 실패: ${JSON.stringify(error)}`);
-          // 발송 실패해도 코드는 이미 DB에 저장됨 — 재시도 가능
-        } else {
-          this.logger.log(`인증 코드 이메일 발송 완료: ${maskEmail(email)}`);
-        }
-      } catch (err) {
-        this.logger.error(`Resend 예외: ${err}`);
+      emailSent = delivery.ok;
+    } catch {
+      this.logger.error('인증 메일 발송 중 예외가 발생했습니다');
+    }
+    if (!emailSent) {
+      // 동시 재요청으로 발급된 다른 코드는 삭제하지 않는다.
+      try {
+        await this.prisma.verificationCode.deleteMany({ where: { id: stored.id } });
+      } catch {
+        this.logger.error('미발송 인증 코드 정리 실패');
       }
-    } else {
-      this.logger.log(`[DEV] 인증 코드 ${code} → ${maskEmail(email)} (Resend 미설정, 이메일 미발송)`);
+      throw new ServiceUnavailableException('인증 메일을 보내지 못했습니다. 잠시 후 다시 시도해주세요');
     }
 
     return {
       message: '인증 코드가 발송되었습니다',
       // ★ 코드는 응답 body에 절대 포함하지 않음 (preview/staging 노출 위험).
-      // dev에서는 위 logger.log 로 서버 콘솔에서 확인 가능.
     };
   }
 
