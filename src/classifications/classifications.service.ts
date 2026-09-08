@@ -4,10 +4,16 @@ import {
   NotFoundException,
   ForbiddenException,
   Logger,
+  BadRequestException,
 } from '@nestjs/common';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateClassificationDto } from './dto/create-classification.dto';
 import { UpdateClassificationDto } from './dto/update-classification.dto';
+import { ReorderClassificationsDto } from './dto/reorder-classifications.dto';
+import { compareClassifications } from './classification-order';
+import { resolveSiteId } from '../common/utils/site-scope';
+import { JwtPayload } from '../common/decorators/current-user.decorator';
 
 @Injectable()
 export class ClassificationsService {
@@ -24,10 +30,11 @@ export class ClassificationsService {
       ? { OR: [{ siteId }, { siteId: null }] }
       : {};
 
-    return this.prisma.classification.findMany({
+    const list = await this.prisma.classification.findMany({
       where,
       orderBy: { sortOrder: 'asc' },
     });
+    return list.sort(compareClassifications);
   }
 
   /**
@@ -49,6 +56,7 @@ export class ClassificationsService {
           code: true,
           displayName: true,
           sortOrder: true,
+          siteId: true,
         },
         orderBy: { sortOrder: 'asc' },
       }),
@@ -57,11 +65,55 @@ export class ClassificationsService {
 
     // 분류(카테고리)별 입력모드 부여 — 항목 코드 접두사(카테고리코드)로 매핑.
     // 미설정 시: 쿠팡(COUPANG)은 기존 동작대로 '수량만', 그 외는 '둘 다'.
-    return list.map((c) => {
+    return list.sort(compareClassifications).map((c) => {
       const categoryCode = c.code.includes('_') ? c.code.split('_')[0] : c.code;
       const fallback = categoryCode === 'COUPANG' ? 'QUANTITY' : 'BOTH';
       return { ...c, inputMode: modes[categoryCode] || fallback };
     });
+  }
+
+  async reorder(dto: ReorderClassificationsDto, user: JwtPayload) {
+    const isMaster = user.role?.toLowerCase() === 'master';
+    if (!isMaster && user.role?.toLowerCase() !== 'admin') {
+      throw new ForbiddenException('납품처 순서는 관리자만 변경할 수 있습니다');
+    }
+    const scopedSite = resolveSiteId({ ...user, role: isMaster ? 'MASTER' : 'ADMIN' }, dto.siteId);
+    if (dto.global && (!isMaster || dto.siteId)) {
+      throw new ForbiddenException('공통 납품처는 MASTER가 공통 범위에서만 변경할 수 있습니다');
+    }
+    const siteId = dto.global ? null : scopedSite;
+    if (siteId === undefined) {
+      throw new BadRequestException('순서를 변경할 사업장을 선택하세요');
+    }
+    try {
+      // Serializable plus the displayed order prevents partial writes and stale-list overwrites.
+      return await this.prisma.$transaction(async (tx) => {
+        const siblings = (await tx.classification.findMany({
+          where: { siteId, isActive: true, code: { startsWith: `${dto.categoryCode}_` } },
+        })).filter((item) => item.code.startsWith(`${dto.categoryCode}_`)).sort(compareClassifications);
+        const currentIds = siblings.map((item) => item.id);
+        if (currentIds.length !== dto.expectedIds.length
+          || currentIds.some((id, index) => id !== dto.expectedIds[index])) {
+          throw new ConflictException('납품처 목록이 변경되었습니다. 새로 조회한 후 다시 이동하세요');
+        }
+        if (dto.ids.length !== currentIds.length || new Set(dto.ids).size !== currentIds.length
+          || dto.ids.some((id) => !currentIds.includes(id))) {
+          throw new BadRequestException('같은 사업장과 분류의 납품처 전체 순서를 전달해야 합니다');
+        }
+        const byId = new Map(siblings.map((item) => [item.id, item]));
+        for (const [sortOrder, id] of dto.ids.entries()) {
+          if (byId.get(id)!.sortOrder !== sortOrder) {
+            await tx.classification.update({ where: { id }, data: { sortOrder } });
+          }
+        }
+        return { ids: dto.ids, siteId, categoryCode: dto.categoryCode };
+      }, { isolationLevel: Prisma.TransactionIsolationLevel.Serializable, timeout: 15_000 });
+    } catch (error) {
+      if (error instanceof Prisma.PrismaClientKnownRequestError && error.code === 'P2034') {
+        throw new ConflictException('다른 관리자가 순서를 변경했습니다. 새로 조회한 후 다시 이동하세요');
+      }
+      throw error;
+    }
   }
 
   /** 분류(카테고리)별 입력모드 맵 (TenantSettings JSON의 classificationModes). 없으면 {}. */

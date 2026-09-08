@@ -21,6 +21,7 @@ import {
 import { ClassificationsService } from './classifications.service';
 import { CreateClassificationDto } from './dto/create-classification.dto';
 import { UpdateClassificationDto } from './dto/update-classification.dto';
+import { ReorderClassificationsDto } from './dto/reorder-classifications.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
@@ -77,6 +78,16 @@ export class ClassificationsController {
     return this.classificationsService.create(dto, siteId);
   }
 
+  @Patch('admin/classifications/reorder')
+  @UseGuards(JwtAuthGuard, RolesGuard)
+  @Roles('ADMIN')
+  @ApiBearerAuth('jwt')
+  @ApiTags('Admin Classifications')
+  @ApiOperation({ summary: '같은 사업장 및 분류의 납품처 순서 일괄 저장' })
+  reorder(@Body() dto: ReorderClassificationsDto, @CurrentUser() user: JwtPayload) {
+    return this.classificationsService.reorder(dto, user);
+  }
+
   @Patch('admin/classifications/:id')
   @UseGuards(JwtAuthGuard, RolesGuard)
   @Roles('ADMIN')
@@ -116,7 +127,7 @@ export class ClassificationsController {
     @Query('siteId') querySiteId?: string,
   ) {
     // ★ siteId 격리: MASTER는 Query로 임의 조회, 나머지는 JWT siteId 강제
-    const siteId = user.role === 'MASTER' ? querySiteId : user.siteId;
+    const siteId = resolveSiteId(user, querySiteId);
     return this.classificationsService.findActiveForMobile(siteId);
   }
 }
