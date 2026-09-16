@@ -3,3 +3,6 @@ dist/
 prisma/dev.db
 .env
 .vercel
+.env.local
+.env.*.local
+.env.production
