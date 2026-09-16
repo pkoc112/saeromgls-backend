@@ -315,6 +315,52 @@ export class CronController {
     );
   }
 
+  // ══════════════════════════════
+  // 메일 설정 진단 / 실발송 테스트 (운영자 전용, Bearer CRON_SECRET)
+  // ══════════════════════════════
+
+  @Get('mail-status')
+  @ApiOperation({
+    summary:
+      '메일 설정 진단 — RESEND_API_KEY / 발신주소 / 수신주소가 실제로 유효한지 확인 (Bearer CRON_SECRET)',
+  })
+  async mailStatus(@Headers('authorization') auth?: string) {
+    this.assertCronAuth(auth);
+    const raw = process.env.RESEND_FROM_EMAIL ?? '';
+    // 환경변수에 섞인 공백/줄바꿈은 화면에 안 보이면서 발송을 깨뜨린다 — 명시적으로 알린다.
+    const fromHasWhitespace = raw !== raw.trim() || raw.includes(' ');
+    const configured = this.notifications.isConfigured();
+    return {
+      timestamp: new Date().toISOString(),
+      resendConfigured: configured,
+      fromEmail: raw.trim() || '(기본값) noreply@sae-work.com',
+      fromEmailHasWhitespace: fromHasWhitespace,
+      masterEmail: this.notifications.masterEmail(),
+      heatAlertEmailSet: Boolean(process.env.HEAT_ALERT_EMAIL),
+      ready: configured,
+    };
+  }
+
+  @Post('mail-test')
+  @ApiOperation({
+    summary:
+      '메일 실발송 테스트 — 운영자 주소로 1통 발송 후 결과를 그대로 반환 (Bearer CRON_SECRET)',
+  })
+  async mailTest(@Headers('authorization') auth?: string) {
+    this.assertCronAuth(auth);
+    const now = new Date();
+    const to = this.notifications.masterEmail();
+    const result = await this.notifications.sendMail({
+      to,
+      subject: `[새롬GLS] 메일 발송 테스트 ${now.toISOString()}`,
+      html:
+        '<p>메일 발송 경로가 정상 동작합니다.</p>' +
+        `<p>발송 시각: ${now.toISOString()}</p>`,
+    });
+    // 실패를 성공으로 표시하지 않는다 — 실패 사유를 그대로 노출한다.
+    return { timestamp: now.toISOString(), to, ...result };
+  }
+
   /**
    * #49 마지막 성공 백업이 BACKUP_STALE_HOURS(30h) 초과(또는 성공 기록 없음)면 MASTER 에게 경고 메일 1통.
    * - 하루 1회: 오늘(KST) BACKUP_STALE_ALERT 감사 기록이 있으면 생략

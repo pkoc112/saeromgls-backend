@@ -54,7 +54,8 @@ export class NotificationsService {
   constructor(private readonly prisma: PrismaService) {
     const apiKey = process.env.RESEND_API_KEY;
     this.resend = apiKey ? new Resend(apiKey) : null;
-    this.fromEmail = process.env.RESEND_FROM_EMAIL || 'noreply@sae-work.com';
+    // 환경변수에 섞인 공백/줄바꿈은 from 주소를 깨뜨려 Resend 가 422 로 거부한다 (눈에 보이지 않음)
+    this.fromEmail = (process.env.RESEND_FROM_EMAIL || '').trim() || 'noreply@sae-work.com';
     if (!this.resend) {
       this.logger.warn('RESEND_API_KEY 미설정 — 알림 메일은 발송되지 않습니다 (로그만 기록)');
     }
