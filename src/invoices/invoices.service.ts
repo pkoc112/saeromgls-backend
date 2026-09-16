@@ -27,6 +27,39 @@ interface InvoiceMailInput {
 /** 메일 발송 결과 (호출자는 카운트만 집계, 절대 throw 하지 않음) */
 type InvoiceMailOutcome = 'sent' | 'skipped' | 'failed';
 
+const KST_OFFSET_MS = 9 * 60 * 60 * 1000;
+
+/** KST 자정(00:00)을 나타내는 Date — Date.UTC 기반이라 호스트 타임존(Vercel=UTC)에 무관. 월 오버플로(12+1)는 Date.UTC가 정규화 */
+function kstMidnight(year: number, monthIndex: number, day: number): Date {
+  return new Date(Date.UTC(year, monthIndex, day) - KST_OFFSET_MS);
+}
+
+/**
+ * 월 청구 기간 계산 (KST 기준, 순수 함수)
+ * - periodStart: 해당 월 1일 00:00 KST
+ * - periodEnd:   다음 달 1일 00:00 KST − 1ms (말일 23:59:59.999 KST)
+ * - dueDate:     해당 월 15일 00:00 KST
+ * ★ 과거 버그: periodStart(=전월 말일 15:00Z)에 setMonth/setDate 를 걸면 서버 로컬(UTC) 날짜 기준으로 동작해
+ *   dueDate 가 전월 15일(발행 즉시 OVERDUE), periodEnd 가 8/31+1개월=9/31 오버플로로 다음달 1일이 됐음.
+ *   → Date.UTC 로 KST 자정을 직접 계산한다 (setMonth/setDate 사용 금지).
+ */
+export function computeInvoicePeriod(month: string): {
+  periodStart: Date;
+  periodEnd: Date;
+  dueDate: Date;
+} {
+  const matched = /^(\d{4})-(\d{2})$/.exec(String(month ?? '').trim());
+  const year = matched ? Number(matched[1]) : NaN;
+  const monthIndex = matched ? Number(matched[2]) - 1 : NaN;
+  if (!matched || monthIndex < 0 || monthIndex > 11) {
+    throw new BadRequestException(`청구 월 형식이 올바르지 않습니다 (YYYY-MM): ${month}`);
+  }
+  const periodStart = kstMidnight(year, monthIndex, 1);
+  const periodEnd = new Date(kstMidnight(year, monthIndex + 1, 1).getTime() - 1);
+  const dueDate = kstMidnight(year, monthIndex, 15);
+  return { periodStart, periodEnd, dueDate };
+}
+
 /**
  * 인보이스 (수동 청구) 서비스
  * - 매월 1일 04:00 KST 자동 생성 (활성 구독 사이트 대상)
@@ -55,16 +88,11 @@ export class InvoicesService {
     const kstNow = new Date(now.getTime() + 9 * 60 * 60 * 1000);
     // 이번 달 ("2026-05")
     const month =
-      targetMonth ||
+      targetMonth?.trim() ||
       `${kstNow.getUTCFullYear()}-${String(kstNow.getUTCMonth() + 1).padStart(2, '0')}`;
 
-    const periodStart = new Date(`${month}-01T00:00:00+09:00`);
-    const periodEnd = new Date(periodStart);
-    periodEnd.setMonth(periodEnd.getMonth() + 1);
-    periodEnd.setMilliseconds(-1); // 말일 23:59:59.999
-
-    const dueDate = new Date(periodStart);
-    dueDate.setDate(15); // 매월 15일
+    // KST 기준 1일 00:00 ~ 말일 23:59:59.999, 납기 15일 00:00 — 호스트(UTC) 타임존 무관 계산
+    const { periodStart, periodEnd, dueDate } = computeInvoicePeriod(month);
 
     // 활성 구독 조회 (TRIAL은 무료, ACTIVE만 청구)
     // ★ YEARLY 구독은 월간 cron에서 제외 — 연요금이 매달(12배) 청구되는 버그 방지.

@@ -9,6 +9,7 @@ import {
 import { randomInt } from 'crypto';
 import * as bcrypt from 'bcrypt';
 import { PrismaService } from '../prisma/prisma.service';
+import { resolveSystemActorId, systemMetadata } from '../common/utils/system-actor';
 import { CreateSiteDto } from './dto/create-site.dto';
 import { UpdateSiteDto } from './dto/update-site.dto';
 import { CloneSettingsDto } from './dto/clone-settings.dto';
@@ -75,21 +76,29 @@ export class SitesService {
   /**
    * 관리 활동 감사 로그 (DB) — 테넌트 개통/삭제 등 추적 (개통 분석 P2).
    * 감사 기록 실패가 본 작업을 막지 않도록 try/catch 로 흡수.
+   * actorWorkerId 가 없으면(시스템 행위) MASTER 계정을 행위자로 쓰고 metadata.system=true 로 구분
+   * — actor_worker_id 는 workers FK 라 'SYSTEM' 문자열은 FK 위반으로 기록 자체가 안 됐음.
    */
   private async logActivity(
-    actorWorkerId: string,
+    actorWorkerId: string | null | undefined,
     actionType: string,
     targetId: string,
     metadata: Record<string, unknown>,
   ): Promise<void> {
     try {
+      const isSystem = !actorWorkerId;
+      const actor = actorWorkerId || (await resolveSystemActorId(this.prisma));
+      if (!actor) {
+        this.logger.warn(`AdminActivityLog 기록 생략(${actionType}): 시스템 행위자(MASTER) 없음`);
+        return;
+      }
       await this.prisma.adminActivityLog.create({
         data: {
-          actorWorkerId: actorWorkerId || 'SYSTEM',
+          actorWorkerId: actor,
           actionType,
           targetType: 'SITE',
           targetId,
-          metadata: JSON.stringify(metadata),
+          metadata: isSystem ? systemMetadata(metadata) : JSON.stringify(metadata),
         },
       });
     } catch (err) {
@@ -303,7 +312,7 @@ export class SitesService {
     });
 
     this.logger.log(`Site created: ${site.name} (${site.code})`);
-    await this.logActivity(actorId ?? 'SYSTEM', 'SITE_CREATE', site.id, {
+    await this.logActivity(actorId, 'SITE_CREATE', site.id, {
       name: site.name,
       code: site.code,
       parentSiteId: dto.parentSiteId ?? null,
@@ -388,7 +397,7 @@ export class SitesService {
 
     await this.prisma.site.delete({ where: { id } });
     this.logger.log(`Site deleted: ${existing.name} (${existing.code})`);
-    await this.logActivity(actorId ?? 'SYSTEM', 'SITE_DELETE', id, {
+    await this.logActivity(actorId, 'SITE_DELETE', id, {
       name: existing.name,
       code: existing.code,
     });
@@ -666,7 +675,7 @@ export class SitesService {
         `breaks +${result.breakConfigs.created}/skip ${result.breakConfigs.skipped}, ` +
         `settings [${result.settingsMerged.join(',')}] (includeChildren=${includeChildren})`,
     );
-    await this.logActivity(actor?.sub ?? 'SYSTEM', 'SITE_CLONE_SETTINGS', target.id, {
+    await this.logActivity(actor?.sub, 'SITE_CLONE_SETTINGS', target.id, {
       sourceSiteId: source.id,
       sourceCode: source.code,
       targetCode: target.code,

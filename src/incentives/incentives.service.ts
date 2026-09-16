@@ -5,6 +5,7 @@ import {
   Logger,
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
+import { resolveSystemActorId, systemMetadata } from '../common/utils/system-actor';
 import { kstStartOfDay, kstEndOfDay } from '../common/kst-date.util';
 import { CreatePolicyDto } from './dto/create-policy.dto';
 import { CreateScoreRunDto } from './dto/create-score-run.dto';
@@ -258,20 +259,28 @@ export class IncentivesService {
             'force 승격 시 reason(5자 이상)이 필수입니다',
           );
         }
-        await this.prisma.adminActivityLog.create({
-          data: {
-            actorWorkerId: options.actorId || 'SYSTEM',
-            actionType: 'POLICY_FORCE_PROMOTE',
-            targetType: 'POLICY_VERSION',
-            targetId: id,
-            metadata: JSON.stringify({
-              from: policy.status,
-              to: status,
-              reason: options.reason,
-              shadowStartedAt: shadowStart?.toISOString() ?? null,
-            }),
-          },
-        });
+        // actorId 없으면 MASTER 계정을 시스템 행위자로 (FK 제약상 'SYSTEM' 문자열 불가) + metadata.system=true
+        const isSystem = !options.actorId;
+        const actorWorkerId = options.actorId || (await resolveSystemActorId(this.prisma));
+        const detail = {
+          from: policy.status,
+          to: status,
+          reason: options.reason,
+          shadowStartedAt: shadowStart?.toISOString() ?? null,
+        };
+        if (!actorWorkerId) {
+          this.logger.warn(`POLICY_FORCE_PROMOTE 감사 기록 생략 — 시스템 행위자(MASTER) 없음 (policy ${id})`);
+        } else {
+          await this.prisma.adminActivityLog.create({
+            data: {
+              actorWorkerId,
+              actionType: 'POLICY_FORCE_PROMOTE',
+              targetType: 'POLICY_VERSION',
+              targetId: id,
+              metadata: isSystem ? systemMetadata(detail) : JSON.stringify(detail),
+            },
+          });
+        }
       }
     }
 
@@ -1128,6 +1137,12 @@ export class IncentivesService {
       skipped: [] as Array<{ runId: string; reason: string }>,
     };
 
+    // 자동 확정은 시스템 행위 — MASTER 계정을 행위자로 (FK 제약상 'SYSTEM' 문자열 불가). 루프 밖에서 1회 해결
+    const systemActor = candidates.length > 0 ? await resolveSystemActorId(this.prisma) : null;
+    if (candidates.length > 0 && !systemActor) {
+      this.logger.warn('Auto-finalize: 시스템 행위자(MASTER) 없음 → SCORE_RUN_AUTO_FINALIZE 감사 기록 생략');
+    }
+
     for (const run of candidates) {
       const entryIds = await this.prisma.scoreEntry
         .findMany({ where: { scoreRunId: run.id }, select: { id: true } })
@@ -1154,20 +1169,22 @@ export class IncentivesService {
         where: { id: run.id },
         data: { status: 'FINALIZED', finalizedAt: new Date() },
       });
-      await this.prisma.adminActivityLog.create({
-        data: {
-          actorWorkerId: 'SYSTEM',
-          actionType: 'SCORE_RUN_AUTO_FINALIZE',
-          targetType: 'SCORE_RUN',
-          targetId: run.id,
-          metadata: JSON.stringify({
-            siteId: run.siteId,
-            month: run.month,
-            frozenAt: run.frozenAt?.toISOString() ?? null,
-            graceDays,
-          }),
-        },
-      });
+      if (systemActor) {
+        await this.prisma.adminActivityLog.create({
+          data: {
+            actorWorkerId: systemActor,
+            actionType: 'SCORE_RUN_AUTO_FINALIZE',
+            targetType: 'SCORE_RUN',
+            targetId: run.id,
+            metadata: systemMetadata({
+              siteId: run.siteId,
+              month: run.month,
+              frozenAt: run.frozenAt?.toISOString() ?? null,
+              graceDays,
+            }),
+          },
+        });
+      }
       result.finalized++;
     }
 

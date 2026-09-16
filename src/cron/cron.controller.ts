@@ -19,6 +19,7 @@ import {
   formatBytes,
   loadBackupHeartbeat,
 } from '../common/utils/backup-heartbeat';
+import { resolveSystemActorId, systemMetadata } from '../common/utils/system-actor';
 
 /** #49 백업 지연 경고 발송 기록 actionType (AdminActivityLog) — 하루 1회 판정 근거 */
 const BACKUP_STALE_ALERT_ACTION = 'BACKUP_STALE_ALERT';
@@ -144,18 +145,24 @@ export class CronController {
       });
     } catch { /* Sentry 미설정이어도 흐름 유지 */ }
     try {
-      await this.prisma.adminActivityLog.create({
-        data: {
-          actorWorkerId: 'SYSTEM',
-          actionType: 'CRON_FAILED',
-          targetType: 'CRON',
-          targetId: jobName,
-          metadata: JSON.stringify({
-            error: lastErr instanceof Error ? lastErr.message : String(lastErr),
-            at: new Date().toISOString(),
-          }),
-        },
-      });
+      // actor_worker_id 는 workers FK — 'SYSTEM' 문자열은 FK 위반이라 MASTER 계정을 시스템 행위자로 사용
+      const actor = await resolveSystemActorId(this.prisma);
+      if (!actor) {
+        this.logger.warn(`Cron ${jobName}: 시스템 행위자(MASTER) 없음 → CRON_FAILED 감사 기록 생략`);
+      } else {
+        await this.prisma.adminActivityLog.create({
+          data: {
+            actorWorkerId: actor,
+            actionType: 'CRON_FAILED',
+            targetType: 'CRON',
+            targetId: jobName,
+            metadata: systemMetadata({
+              error: lastErr instanceof Error ? lastErr.message : String(lastErr),
+              at: new Date().toISOString(),
+            }),
+          },
+        });
+      }
     } catch { /* 감사 로그 실패도 무시 */ }
     this.logger.error(`Cron ${jobName} FINAL FAILURE after ${maxRetries} attempts: ${lastErr}`);
     throw lastErr;
@@ -420,19 +427,24 @@ export class CronController {
     this.logger.warn(`Backup heartbeat: 경고 발송 "${subject}"`);
     // 발송 기록 (하루 1회 판정 근거) — 기록 실패는 흐름을 막지 않음 (다음 실행은 크론 주기상 다음 날)
     try {
-      await this.prisma.adminActivityLog.create({
-        data: {
-          actorWorkerId: 'SYSTEM',
-          actionType: BACKUP_STALE_ALERT_ACTION,
-          targetType: 'CRON',
-          targetId: 'backup-heartbeat',
-          metadata: JSON.stringify({
-            ...base,
-            mailId: sendResult.id ?? null,
-            sentAt: now.toISOString(),
-          }),
-        },
-      });
+      const actor = await resolveSystemActorId(this.prisma);
+      if (!actor) {
+        this.logger.warn('Backup heartbeat: 시스템 행위자(MASTER) 없음 → 발송 기록 생략 (중복 방지 불가)');
+      } else {
+        await this.prisma.adminActivityLog.create({
+          data: {
+            actorWorkerId: actor,
+            actionType: BACKUP_STALE_ALERT_ACTION,
+            targetType: 'CRON',
+            targetId: 'backup-heartbeat',
+            metadata: systemMetadata({
+              ...base,
+              mailId: sendResult.id ?? null,
+              sentAt: now.toISOString(),
+            }),
+          },
+        });
+      }
     } catch (err) {
       this.logger.warn(`Backup heartbeat: 발송 기록 실패 (중복 방지 불가): ${err}`);
     }
@@ -665,13 +677,18 @@ export class CronController {
 
         // 감사 기록 (errors 포함)
         await runStep('audit-record', async () => {
+          const actor = await resolveSystemActorId(this.prisma);
+          if (!actor) {
+            this.logger.warn('[purge] 시스템 행위자(MASTER) 없음 → DATA_RETENTION_PURGE 감사 기록 생략');
+            return;
+          }
           await this.prisma.adminActivityLog.create({
             data: {
-              actorWorkerId: 'SYSTEM',
+              actorWorkerId: actor,
               actionType: 'DATA_RETENTION_PURGE',
               targetType: 'CRON',
               targetId: 'monthly-purge',
-              metadata: JSON.stringify(purgeStats),
+              metadata: systemMetadata(purgeStats),
             },
           });
         });

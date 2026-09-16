@@ -30,7 +30,9 @@ import { PinLoginDto } from './dto/pin-login.dto';
 import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { RegisterDto } from './dto/register.dto';
 import { ResetPasswordDto } from './dto/reset-password.dto';
+import { SendVerificationDto } from './dto/send-verification.dto';
 import { UpdateMeDto } from './dto/update-me.dto';
+import { VerifyEmailDto } from './dto/verify-email.dto';
 import { VerifyPinDto } from './dto/verify-pin.dto';
 import { JwtAuthGuard } from './jwt-auth.guard';
 
@@ -192,7 +194,8 @@ export class AuthController {
   @ApiOperation({ summary: '이메일 인증 코드 발급' })
   // ★ 메일 폭주 방어 — 동일 IP에서 분당 3회까지
   @Throttle({ default: { limit: 3, ttl: 60_000 } })
-  async sendVerification(@Body() dto: { email: string }) {
+  // ★ 인라인 타입은 ValidationPipe를 타지 않음 — 반드시 DTO 클래스 배선 (whitelist라 DTO 미선언 필드는 조용히 제거됨)
+  async sendVerification(@Body() dto: SendVerificationDto) {
     return this.authService.sendVerificationCode(dto.email);
   }
 
@@ -202,7 +205,7 @@ export class AuthController {
   @ApiOperation({ summary: '이메일 인증 확인' })
   // ★ 6자리 코드 brute force 방어
   @Throttle({ default: { limit: 10, ttl: 60_000 } })
-  async verifyEmail(@Body() dto: { email: string; code: string }) {
+  async verifyEmail(@Body() dto: VerifyEmailDto) {
     return this.authService.verifyEmail(dto.email, dto.code);
   }
 

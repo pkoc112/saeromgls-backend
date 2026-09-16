@@ -412,11 +412,13 @@ export class AuthService {
   // 비밀번호 재설정
   // ──────────────────────────────────────────────
   async resetPassword(
-    email: string,
+    rawEmail: string,
     employeeCode: string,
     verificationCode: string,
     newPassword: string,
   ) {
+    // 인증코드 발급 시와 동일하게 정규화 — 대소문자 차이로 '계정 없음'이 나지 않도록
+    const email = this.normalizeVerificationEmail(rawEmail);
     const worker = await this.prisma.worker.findUnique({
       where: { email },
     });
@@ -689,7 +691,9 @@ export class AuthService {
   // ──────────────────────────────────────────────
   // 이메일 인증 코드 발급 (DB 저장 — 서버리스 호환)
   // ──────────────────────────────────────────────
-  async sendVerificationCode(email: string) {
+  async sendVerificationCode(rawEmail: string) {
+    // ★ 정규화·빈 값 거부를 가장 먼저 — email이 undefined면 아래 deleteMany가 조건 없는 전체 삭제가 됨
+    const email = this.normalizeVerificationEmail(rawEmail);
     if (!this.notifications.isConfigured()) {
       throw new ServiceUnavailableException('메일 발송이 설정되지 않았습니다. 관리자에게 문의해주세요');
     }
@@ -747,7 +751,8 @@ export class AuthService {
   // ──────────────────────────────────────────────
   // 이메일 인증 코드 확인
   // ──────────────────────────────────────────────
-  async verifyEmail(email: string, code: string) {
+  async verifyEmail(rawEmail: string, code: string) {
+    const email = this.normalizeVerificationEmail(rawEmail);
     const stored = await this.prisma.verificationCode.findFirst({
       where: { email },
       orderBy: { createdAt: 'desc' },
@@ -1239,7 +1244,21 @@ export class AuthService {
     return value * unitMap[unit];
   }
 
-  private async consumeVerificationCode(email: string, code: string) {
+  /**
+   * 인증코드 테이블 키로 쓰는 이메일 정규화 (trim + 소문자).
+   * ★ 빈 값이면 즉시 거부 — where: { email: undefined }는 Prisma에서 '조건 없음'으로 해석되어
+   *   deleteMany가 발급된 인증코드 전체를 지운다. 저장/조회/삭제 모두 이 값을 써야 한다.
+   */
+  private normalizeVerificationEmail(email: unknown): string {
+    const normalized = typeof email === 'string' ? email.trim().toLowerCase() : '';
+    if (!normalized) {
+      throw new BadRequestException('이메일을 입력해 주세요');
+    }
+    return normalized;
+  }
+
+  private async consumeVerificationCode(rawEmail: string, code: string) {
+    const email = this.normalizeVerificationEmail(rawEmail);
     const stored = await this.prisma.verificationCode.findFirst({
       where: { email },
       orderBy: { createdAt: 'desc' },

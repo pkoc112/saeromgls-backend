@@ -7,6 +7,7 @@ import {
 } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { NotificationsService } from '../common/notifications/notifications.service';
+import { resolveSystemActorId, systemMetadata } from '../common/utils/system-actor';
 
 // ══════════════════════════════════════════════
 // 구독 상태 전이 상수 (State Machine)
@@ -1263,19 +1264,29 @@ export class SubscriptionsService {
     actorId?: string,
   ) {
     try {
+      // actorId 없음 = 크론 자동 전이 → MASTER 계정을 시스템 행위자로 (FK 제약상 'SYSTEM' 문자열 불가) + metadata.system=true
+      const isSystem = !actorId;
+      const actorWorkerId = actorId || (await resolveSystemActorId(this.prisma));
+      if (!actorWorkerId) {
+        this.logger.warn(
+          `구독 전이 감사 로그 생략 — 시스템 행위자(MASTER) 없음 (${subscriptionId}: ${fromStatus}→${toStatus})`,
+        );
+        return;
+      }
+      const detail = {
+        fromStatus,
+        toStatus,
+        reason,
+        timestamp: new Date().toISOString(),
+      };
       await this.prisma.adminActivityLog.create({
         data: {
           siteId,
-          actorWorkerId: actorId || 'SYSTEM',
+          actorWorkerId,
           actionType: 'SUBSCRIPTION_TRANSITION',
           targetType: 'SUBSCRIPTION',
           targetId: subscriptionId,
-          metadata: JSON.stringify({
-            fromStatus,
-            toStatus,
-            reason,
-            timestamp: new Date().toISOString(),
-          }),
+          metadata: isSystem ? systemMetadata(detail) : JSON.stringify(detail),
         },
       });
     } catch (err) {
