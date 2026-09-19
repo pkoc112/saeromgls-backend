@@ -4,9 +4,10 @@ import {
   BadRequestException,
   NotFoundException,
   ServiceUnavailableException,
+  ForbiddenException,
   Logger,
 } from '@nestjs/common';
-import { randomUUID, randomBytes, randomInt, createHash } from 'crypto';
+import { randomUUID, randomBytes, randomInt, createHash, createHmac } from 'crypto';
 import { JwtService } from '@nestjs/jwt';
 import * as bcrypt from 'bcrypt';
 import { NotificationsService } from '../common/notifications/notifications.service';
@@ -1088,7 +1089,7 @@ export class AuthService {
   // 키오스크 관리 동작 PIN 확인 (#26)
   // 로그인된 태블릿(JWT)에서 로그아웃/캐시 초기화/기록 삭제 직전에
   // "호출자 사이트 내 관리자(ADMIN/SUPERVISOR/MASTER) 중 하나의 PIN"과 대조.
-  // 토큰 재발급 없음 — 통과 여부만 반환 (1회성, 클라이언트가 동작마다 재호출).
+  // 로그인 토큰은 재발급하지 않는다. 기록 수정에는 해당 기록에만 유효한 10분 승인값을 반환한다.
   //
   // 범위: resolveSiteId(user) → MASTER는 전체, 그 외 JWT siteId 강제.
   //   siteId 필터는 OR:[{siteId},{siteId:null}] 패턴(NULL 백필 전 기존 관리자 보호)
@@ -1101,6 +1102,7 @@ export class AuthService {
     pin: string,
     ipAddress?: string,
     userAgent?: string,
+    editWorkItemId?: string,
   ) {
     const PIN_MISMATCH = '관리자 PIN이 올바르지 않습니다';
     // LoginHistory에서 로그인 시도와 구분 가능하도록 UA에 태그
@@ -1157,7 +1159,51 @@ export class AuthService {
       `PIN gate passed: caller=${user.employeeCode} by ${matched.role}(${matched.id.slice(0, 8)})`,
     );
 
-    return { ok: true, role: matched.role, name: matched.name };
+    const approval = editWorkItemId ? {
+      adminApproval: await this.jwtService.signAsync({
+        sub: user.sub,
+        siteId: user.siteId ?? null,
+        workItemId: editWorkItemId,
+        actorWorkerId: matched.id,
+      }, {
+        secret: this.mobileEditApprovalSecret(),
+        algorithm: 'HS256',
+        audience: 'mobile-work-item-edit',
+        expiresIn: '10m',
+      }),
+    } : {};
+    return { ok: true, role: matched.role, name: matched.name, ...approval };
+  }
+
+  // Separate signing key: an edit approval must never authenticate as an access/refresh token.
+  private mobileEditApprovalSecret(): string {
+    const secret = process.env.JWT_SECRET;
+    if (!secret) throw new ServiceUnavailableException('관리자 확인 설정을 확인해주세요');
+    return createHmac('sha256', secret).update('mobile-work-item-edit:v1').digest('hex');
+  }
+
+  async verifyMobileEditApproval(user: JwtPayload, workItemId: string, approval?: string): Promise<string> {
+    const denied = () => new ForbiddenException('관리자 확인이 없거나 만료되었습니다. PIN을 다시 확인해주세요');
+    if (!approval) throw denied();
+    let payload: { sub: string; siteId: string | null; workItemId: string; actorWorkerId: string };
+    try {
+      payload = await this.jwtService.verifyAsync(approval, {
+        secret: this.mobileEditApprovalSecret(), algorithms: ['HS256'], audience: 'mobile-work-item-edit',
+      });
+    } catch {
+      throw denied();
+    }
+    if (payload.sub !== user.sub || payload.siteId !== (user.siteId ?? null) || payload.workItemId !== workItemId) {
+      throw denied();
+    }
+    const actor = await this.prisma.worker.findUnique({ where: { id: payload.actorWorkerId } });
+    const role = actor?.role?.toLowerCase() ?? '';
+    const siteId = resolveSiteId(user);
+    if (!actor || actor.status !== 'ACTIVE' || !['master', 'admin', 'supervisor'].includes(role) ||
+      (siteId && actor.siteId && actor.siteId !== siteId && role !== 'master')) {
+      throw denied();
+    }
+    return actor.id;
   }
 
   // ──────────────────────────────────────────────

@@ -24,6 +24,11 @@ export const MOBILE_NOTES_MEMO_MAX_LENGTH = 500;
  *   서비스(updateFromMobile)가 workerId / coWorkerIds 로 정규화하며 둘 다 오면 정식 이름 우선
  */
 export class UpdateWorkItemMobileDto {
+  @ApiProperty({ description: 'verify-pin에서 발급한 해당 작업 수정 승인값', required: true })
+  @IsString({ message: '앱을 업데이트한 뒤 관리자 PIN을 다시 확인해주세요' })
+  @MaxLength(2048, { message: '관리자 확인값이 올바르지 않습니다' })
+  adminApproval?: string;
+
   @ApiProperty({
     description: '납품처(분류) ID — 같은 사업장(또는 전역) 활성 분류만',
     required: false,
@@ -112,7 +117,7 @@ export class UpdateWorkItemMobileDto {
 
   @ApiProperty({
     description:
-      'PIN 통과 관리자 ID — 같은 사업장의 ADMIN/SUPERVISOR/MASTER 이면 감사 로그 actor 로 기록, 아니면 무시하고 JWT 계정 사용',
+      '구버전 호환 필드. 실제 수정자는 서버가 검증한 승인값으로 결정',
     required: false,
   })
   @IsUUID('4', { message: '올바른 관리자 ID 형식이 아닙니다' })

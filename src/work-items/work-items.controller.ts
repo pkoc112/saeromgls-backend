@@ -38,6 +38,7 @@ import { CreateManualWorkItemDto } from './dto/create-manual-work-item.dto';
 import { BulkWorkItemsDto } from './dto/bulk-work-items.dto';
 import { UpdateWorkItemMobileDto } from './dto/update-work-item-mobile.dto';
 import { JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { AuthService } from '../auth/auth.service';
 import { RolesGuard } from '../auth/roles.guard';
 import { Roles } from '../auth/roles.decorator';
 import { CurrentUser, JwtPayload } from '../common/decorators/current-user.decorator';
@@ -48,7 +49,7 @@ import { Feature } from '../common/decorators/feature.decorator';
 
 @Controller()
 export class WorkItemsController {
-  constructor(private readonly workItemsService: WorkItemsService) {}
+  constructor(private readonly workItemsService: WorkItemsService, private readonly authService: AuthService) {}
 
   // ===================== Mobile Endpoints =====================
 
@@ -259,7 +260,7 @@ export class WorkItemsController {
   @ApiResponse({ status: 400, description: '무효화된 작업 / 유효하지 않은 작업자·분류 / 수정 항목 없음' })
   @ApiResponse({ status: 403, description: '다른 사업장의 작업·작업자·분류' })
   @ApiResponse({ status: 404, description: '작업 없음' })
-  updateWorkItemMobile(
+  async updateWorkItemMobile(
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateWorkItemMobileDto,
     @Req() req: Request,
@@ -267,8 +268,8 @@ export class WorkItemsController {
   ) {
     const ip = req.ip || req.socket.remoteAddress;
     const userAgent = req.headers['user-agent'];
-    // ★ 태블릿 계정(<코드>-KIOSK, SUPERVISOR)도 호출 가능 — 사업장 격리는 서비스에서 (voidWorkItemFromMobile 과 같은 계층)
-    return this.workItemsService.updateFromMobile(id, dto, ip, userAgent, user);
+    const actorWorkerId = await this.authService.verifyMobileEditApproval(user, id, dto.adminApproval);
+    return this.workItemsService.updateFromMobile(id, { ...dto, actorWorkerId }, ip, userAgent, user);
   }
 
   // ===================== Admin Endpoints =====================

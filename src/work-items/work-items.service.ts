@@ -1455,7 +1455,7 @@ export class WorkItemsService {
     });
     if (!workItem) throw new NotFoundException('작업을 찾을 수 없습니다');
 
-    // WORKER 토큰은 본인 작업만 (관리자/반장/태블릿 계정은 PIN 게이트를 거친 것으로 보고 사업장 격리만 적용)
+    // 수정 승인과 감사 actor는 컨트롤러에서 검증. WORKER 토큰은 본인 작업 제한도 유지한다.
     if (requester && requester.role?.toLowerCase() === 'worker') {
       assertWorkItemOwnership({
         requesterId: requester.sub,

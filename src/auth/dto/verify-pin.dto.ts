@@ -1,5 +1,5 @@
-import { ApiProperty } from '@nestjs/swagger';
-import { IsNotEmpty, IsString, Length } from 'class-validator';
+import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { IsNotEmpty, IsOptional, IsString, IsUUID, Length } from 'class-validator';
 
 /**
  * 키오스크 관리 동작 PIN 확인 DTO (#26)
@@ -17,4 +17,9 @@ export class VerifyPinDto {
   @IsNotEmpty({ message: 'PIN을 입력해주세요' })
   @Length(4, 20, { message: 'PIN은 4~20자여야 합니다' })
   pin: string;
+
+  @ApiPropertyOptional({ description: '수정을 승인할 작업 ID. 다른 관리 동작은 생략' })
+  @IsOptional()
+  @IsUUID('4', { message: '올바른 작업 ID 형식이 아닙니다' })
+  editWorkItemId?: string;
 }

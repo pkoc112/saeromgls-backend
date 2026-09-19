@@ -90,7 +90,7 @@ export class AuthController {
   ) {
     const ip = req.ip || req.headers['x-forwarded-for']?.toString();
     const ua = req.headers['user-agent'];
-    return this.authService.verifyAdminPin(user, dto.pin, ip, ua);
+    return this.authService.verifyAdminPin(user, dto.pin, ip, ua, dto.editWorkItemId);
   }
 
   @Post('auth/refresh')
