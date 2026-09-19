@@ -19,6 +19,10 @@ import { UpdateWorkItemDto, VoidWorkItemDto, ForceEndWorkItemDto } from './dto/u
 import { QueryWorkItemsDto } from './dto/query-work-items.dto';
 import { CreateManualWorkItemDto } from './dto/create-manual-work-item.dto';
 import { BulkWorkItemsDto } from './dto/bulk-work-items.dto';
+import {
+  MOBILE_NOTES_MEMO_MAX_LENGTH,
+  UpdateWorkItemMobileDto,
+} from './dto/update-work-item-mobile.dto';
 import { Prisma } from '@prisma/client';
 
 import {
@@ -34,6 +38,13 @@ import { resolveSiteId } from '../common/utils/site-scope';
 type MobileWorkItem = Prisma.WorkItemGetPayload<{
   include: { assignments: true; startedByWorker: { select: { siteId: true } } };
 }>;
+
+/** 현장 작업자에서 제외할 관리 역할 — workers.service.ts MANAGEMENT_ROLES 와 동일 (모듈 비공개라 소문자 비교용으로 재선언) */
+const MANAGEMENT_ROLES = ['master', 'admin'] as const;
+/** 태블릿 키오스크 계정 사번 접미어 — sites.service.ts KIOSK_CODE_SUFFIX 와 동일 규칙 (사람이 아니므로 배정 불가) */
+const KIOSK_CODE_SUFFIX = '-KIOSK';
+/** 태블릿 수정 감사 로그 기본 사유 */
+const MOBILE_EDIT_DEFAULT_REASON = '태블릿에서 수정';
 
 @Injectable()
 export class WorkItemsService {
@@ -408,16 +419,24 @@ export class WorkItemsService {
     const beforeState = JSON.stringify(workItem);
     const now = resolveWorkEventTime(dto.occurredAt, workItem);
 
-    // notes 필드에 pause 이력을 JSON으로 누적
+    // notes 필드에 pause 이력을 JSON으로 누적 — memo 등 다른 키와 평문 비고는 보존한다
+    // (예전엔 {pauseHistory} 로 통째 덮어써 태블릿/웹에서 적은 비고가 중간마감 때 사라졌다)
     let pauseHistory: Array<{ pausedAt: string; pausedByWorkerId: string; resumedAt?: string }> = [];
+    let notesBase: Record<string, unknown> = {};
     if (workItem.notes) {
       try {
         const parsed = JSON.parse(workItem.notes);
-        if (Array.isArray(parsed?.pauseHistory)) {
-          pauseHistory = parsed.pauseHistory;
+        if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) {
+          notesBase = parsed;
+          if (Array.isArray(parsed.pauseHistory)) {
+            pauseHistory = parsed.pauseHistory;
+          }
+        } else {
+          notesBase = { memo: workItem.notes };
         }
       } catch {
-        // notes가 JSON이 아닌 경우 무시
+        // notes가 JSON이 아닌 평문 비고 → memo 키로 옮겨 보존
+        notesBase = { memo: workItem.notes };
       }
     }
     pauseHistory.push({
@@ -425,7 +444,7 @@ export class WorkItemsService {
       pausedByWorkerId: dto.pausedByWorkerId,
     });
 
-    const notesJson = JSON.stringify({ pauseHistory });
+    const notesJson = JSON.stringify({ ...notesBase, pauseHistory });
 
     const item = await tx.workItem.update({
       where: { id },
@@ -1405,5 +1424,330 @@ export class WorkItemsService {
       return item;
     });
     return this.findOneRaw(updated.id);
+  }
+
+  /**
+   * 모바일: 작업 수정 (태블릿 '현황' 기록 길게 누르기 → 관리자 PIN 통과 → 수정 시트)
+   * - 대상: ACTIVE/PAUSED/ENDED 모두. VOID 는 거부
+   * - 격리: assertSiteOwnership (MASTER 제외 JWT siteId 강제, NULL 레거시 허용).
+   *   WORKER 토큰은 본인이 시작/참여한 작업만 (restoreWorkItem 과 동일)
+   * - 분류/작업자/공동작업자: validateCreateTargets 와 같은 규칙 — 같은 사업장(NULL 레거시·전역 분류 허용)만.
+   *   작업자는 ACTIVE + 현장 작업자만 (관리 역할 MASTER/ADMIN·키오스크 계정 제외)
+   * - 비고: notes 가 중간마감 이력(pauseHistory JSON)이면 이력을 보존하고 memo 키로 병합.
+   *   앱이 이미 병합한 JSON 을 보내도 memo 만 추출 (이중 병합 방지 — mergeMobileNotes)
+   * - 배정: workerId/coWorkerIds(별칭 startedByWorkerId/participantWorkerIds) 중 하나라도 오면
+   *   STARTER + PARTICIPANT 를 전체 재구성 (deleteMany → createMany)
+   * - 감사: EDIT, before/after(배정 포함), reason 기본 '태블릿에서 수정'.
+   *   actorWorkerId(PIN 통과 관리자)가 같은 사업장의 ADMIN/SUPERVISOR/MASTER 면 actor, 아니면 JWT sub
+   * - 반환: 목록 조회(findActiveForMobile)와 동일 형태 — 앱이 목록 항목을 그대로 교체 저장
+   */
+  async updateFromMobile(
+    id: string,
+    dto: UpdateWorkItemMobileDto,
+    ip?: string,
+    userAgent?: string,
+    requester?: JwtPayload,
+  ) {
+    await this.assertSiteOwnership(id, requester);
+    const workItem = await this.prisma.workItem.findUnique({
+      where: { id },
+      include: { assignments: true, startedByWorker: { select: { siteId: true } } },
+    });
+    if (!workItem) throw new NotFoundException('작업을 찾을 수 없습니다');
+
+    // WORKER 토큰은 본인 작업만 (관리자/반장/태블릿 계정은 PIN 게이트를 거친 것으로 보고 사업장 격리만 적용)
+    if (requester && requester.role?.toLowerCase() === 'worker') {
+      assertWorkItemOwnership({
+        requesterId: requester.sub,
+        requesterRole: requester.role,
+        workItem,
+      });
+    }
+
+    if (workItem.status === 'VOID') {
+      throw new BadRequestException('무효화된 작업은 수정할 수 없습니다');
+    }
+
+    // 앱 구버전 호환 — 별칭(startedByWorkerId/participantWorkerIds)을 정식 이름으로 정규화 (둘 다 오면 정식 이름 우선)
+    const requestedWorkerId = dto.workerId ?? dto.startedByWorkerId;
+    const requestedCoWorkerIds = dto.coWorkerIds ?? dto.participantWorkerIds;
+
+    const hasChange = [
+      dto.classificationId,
+      dto.volume,
+      dto.quantity,
+      dto.notes,
+      requestedWorkerId,
+      requestedCoWorkerIds,
+    ].some((v) => v !== undefined);
+    if (!hasChange) throw new BadRequestException('수정할 항목이 없습니다');
+
+    // 격리 기준 사업장: 비-MASTER 는 JWT siteId, MASTER 는 작업 시작 작업자의 사업장 (수기 등록과 동일)
+    const scopeSiteId =
+      requester?.role?.toLowerCase() === 'master'
+        ? workItem.startedByWorker.siteId ?? undefined
+        : requester?.siteId;
+
+    const updateData: Prisma.WorkItemUpdateInput = {};
+
+    // (c) 납품처(분류) 변경 — 존재·활성 + 같은 사업장 (전역 분류 siteId=NULL 허용)
+    if (dto.classificationId !== undefined && dto.classificationId !== workItem.classificationId) {
+      const classification = await this.prisma.classification.findUnique({
+        where: { id: dto.classificationId },
+      });
+      if (!classification || !classification.isActive) {
+        throw new BadRequestException('유효하지 않은 분류입니다');
+      }
+      if (scopeSiteId && classification.siteId && classification.siteId !== scopeSiteId) {
+        throw new ForbiddenException('다른 사업장의 분류로 변경할 수 없습니다');
+      }
+      updateData.classification = { connect: { id: dto.classificationId } };
+    }
+
+    // (a) 물량/수량 — Number() 래핑 (문자열·Decimal 방어, class-validator 뒤 2차 방어)
+    if (dto.volume !== undefined) {
+      const volume = Number(dto.volume);
+      if (!Number.isFinite(volume) || volume < 0) {
+        throw new BadRequestException('물량은 0 이상의 숫자여야 합니다');
+      }
+      updateData.volume = volume;
+    }
+    if (dto.quantity !== undefined) {
+      const quantity = Number(dto.quantity);
+      if (!Number.isInteger(quantity) || quantity < 0) {
+        throw new BadRequestException('수량은 0 이상의 정수여야 합니다');
+      }
+      updateData.quantity = quantity;
+    }
+
+    // (b) 비고 — 중간마감 이력 보존 병합
+    if (dto.notes !== undefined) {
+      updateData.notes = this.mergeMobileNotes(workItem.notes, dto.notes);
+    }
+
+    // (d)(e) 시작 작업자 교체 / 공동작업자 변경 — 배정 전체 재구성
+    const newStarterId = requestedWorkerId ?? workItem.startedByWorkerId;
+    const starterChanged = newStarterId !== workItem.startedByWorkerId;
+    const reassign = starterChanged || requestedCoWorkerIds !== undefined;
+    let nextAssignments: Array<{ workItemId: string; workerId: string; role: string }> = [];
+    if (reassign) {
+      // 공동작업자를 보내지 않으면 기존 참여자 유지 (기존 시작 작업자 행은 제외)
+      const coWorkerIds =
+        requestedCoWorkerIds ??
+        workItem.assignments
+          .filter((a) => a.workerId !== workItem.startedByWorkerId)
+          .map((a) => a.workerId);
+      const participantIds = [...new Set(coWorkerIds)].filter((wid) => wid !== newStarterId);
+
+      // 새로 들어오는 작업자만 검증 (기존 배정자는 생성 시 검증됨 — 이후 비활성화돼도 다른 필드 수정을 막지 않음)
+      const alreadyOnItem = new Set([
+        workItem.startedByWorkerId,
+        ...workItem.assignments.map((a) => a.workerId),
+      ]);
+      await this.assertFieldWorkersInScope(
+        [newStarterId, ...participantIds].filter((wid) => !alreadyOnItem.has(wid)),
+        scopeSiteId,
+      );
+
+      if (starterChanged) {
+        updateData.startedByWorker = { connect: { id: newStarterId } };
+      }
+      nextAssignments = [
+        { workItemId: id, workerId: newStarterId, role: 'STARTER' },
+        ...participantIds.map((workerId) => ({ workItemId: id, workerId, role: 'PARTICIPANT' })),
+      ];
+    }
+
+    const actorWorkerId = await this.resolveMobileEditActor(
+      dto.actorWorkerId,
+      scopeSiteId,
+      requester?.sub ?? workItem.startedByWorkerId,
+    );
+    const reason = dto.reason?.trim() || MOBILE_EDIT_DEFAULT_REASON;
+    const beforeState = JSON.stringify(workItem);
+
+    await this.prisma.$transaction(async (tx) => {
+      const item = await tx.workItem.update({ where: { id }, data: updateData });
+
+      let assignments: Array<{ workerId: string; role: string }> = workItem.assignments;
+      if (reassign) {
+        await tx.workAssignment.deleteMany({ where: { workItemId: id } });
+        await tx.workAssignment.createMany({ data: nextAssignments });
+        assignments = nextAssignments;
+      }
+
+      await tx.auditLog.create({
+        data: {
+          actorWorkerId,
+          workItemId: id,
+          action: 'EDIT',
+          before: beforeState,
+          after: JSON.stringify({ ...item, assignments }),
+          reason,
+          ip,
+          userAgent,
+        },
+      });
+    });
+
+    this.logger.log(`WorkItem edited from mobile: ${id} by ${actorWorkerId}`);
+    return this.findOneForMobile(id);
+  }
+
+  /**
+   * 태블릿 수정에서 새로 배정되는 작업자 검증 (validateCreateTargets 와 같은 격리 규칙)
+   * - 존재 + ACTIVE
+   * - 현장 작업자만: 관리 역할(MASTER/ADMIN)·키오스크 계정(-KIOSK 사번) 제외
+   * - 같은 사업장만 (siteId 일치 또는 NULL 레거시)
+   */
+  private async assertFieldWorkersInScope(workerIds: string[], scopeSiteId?: string): Promise<void> {
+    const ids = [...new Set(workerIds)];
+    if (ids.length === 0) return;
+    const workers = await this.prisma.worker.findMany({
+      where: { id: { in: ids } },
+      select: { id: true, siteId: true, status: true, role: true, employeeCode: true },
+    });
+    if (workers.length !== ids.length) {
+      throw new BadRequestException('존재하지 않는 작업자가 포함되어 있습니다');
+    }
+    for (const worker of workers) {
+      if (worker.status !== 'ACTIVE') {
+        throw new BadRequestException('비활성 작업자는 배정할 수 없습니다');
+      }
+      const isManagement = (MANAGEMENT_ROLES as readonly string[]).includes(worker.role.toLowerCase());
+      if (isManagement || worker.employeeCode.includes(KIOSK_CODE_SUFFIX)) {
+        throw new BadRequestException('현장 작업자만 배정할 수 있습니다');
+      }
+      if (scopeSiteId && worker.siteId && worker.siteId !== scopeSiteId) {
+        throw new ForbiddenException('다른 사업장의 작업자는 배정할 수 없습니다');
+      }
+    }
+  }
+
+  /**
+   * 감사 로그 actor 결정 — verifyAdminPin 과 같은 후보 범위
+   * PIN 통과 관리자(actorWorkerId)가 ACTIVE 이고 같은 사업장의 ADMIN/SUPERVISOR(MASTER 는 사업장 무관)면 그 id,
+   * 아니면 조용히 무시하고 fallback(JWT sub)
+   */
+  private async resolveMobileEditActor(
+    actorWorkerId: string | undefined,
+    scopeSiteId: string | undefined,
+    fallback: string,
+  ): Promise<string> {
+    if (!actorWorkerId || actorWorkerId === fallback) return fallback;
+    const actor = await this.prisma.worker.findUnique({
+      where: { id: actorWorkerId },
+      select: { id: true, role: true, status: true, siteId: true },
+    });
+    if (!actor || actor.status !== 'ACTIVE') return fallback;
+    const role = actor.role.toLowerCase();
+    if (!['master', 'admin', 'supervisor'].includes(role)) return fallback;
+    if (role !== 'master' && scopeSiteId && actor.siteId && actor.siteId !== scopeSiteId) return fallback;
+    return actor.id;
+  }
+
+  /**
+   * 비고 병합 — notes 는 중간마감 이력(pauseHistory JSON) 저장소를 겸함
+   * (순작업시간·폭염·AI 집계가 pauseHistory 를 파싱하므로 평문으로 덮어쓰면 안 됨)
+   * - incoming 이 시스템 JSON 객체({ pauseHistory, memo })면 memo(없으면 text) 키만 추출 —
+   *   앱 구버전(mergeNotesForSave)이 병합 결과 전체를 보내도 memo 안에 JSON 이 다시 들어가지 않게.
+   *   incoming 의 pauseHistory 는 신뢰하지 않음 (중단/재개는 서버가 기록 — 오프라인 큐와 중복 위험)
+   * - 기존 notes 가 JSON + pauseHistory: 이력 보존, memo 키만 교체 (빈 비고면 memo 제거)
+   * - 기존 notes 가 평문/없음: memo 로 교체 (빈 비고면 null)
+   * - memo 길이 상한은 추출 후 검사 (DTO @MaxLength 는 JSON 통과용 남용 방지선)
+   */
+  private mergeMobileNotes(existing: string | null, incoming: string): string | null {
+    const trimmed = this.extractMobileMemo(incoming);
+    if (trimmed.length > MOBILE_NOTES_MEMO_MAX_LENGTH) {
+      throw new BadRequestException(`비고는 ${MOBILE_NOTES_MEMO_MAX_LENGTH}자 이하로 입력해주세요`);
+    }
+    const parsed = this.parseNotesObject(existing);
+    if (parsed && Array.isArray(parsed.pauseHistory)) {
+      const next: Record<string, unknown> = { ...parsed };
+      delete next.memo;
+      if (trimmed) next.memo = trimmed;
+      return JSON.stringify(next);
+    }
+    return trimmed || null;
+  }
+
+  /** 앱이 보낸 notes 에서 memo 평문 추출 (시스템 JSON 객체면 memo ?? text, 아니면 원문) — trim 적용 */
+  private extractMobileMemo(incoming: string): string {
+    const obj = this.parseNotesObject(incoming);
+    if (!obj) return incoming.trim();
+    const memo = obj.memo ?? obj.text;
+    return typeof memo === 'string' ? memo.trim() : '';
+  }
+
+  /** notes 가 JSON 객체 문자열이면 파싱 결과, 아니면 null (배열·평문·파싱 실패 모두 null) */
+  private parseNotesObject(notes: string | null | undefined): Record<string, unknown> | null {
+    if (typeof notes !== 'string') return null;
+    const s = notes.trim();
+    if (!s.startsWith('{')) return null;
+    try {
+      const parsed = JSON.parse(s);
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
+        ? (parsed as Record<string, unknown>)
+        : null;
+    } catch {
+      return null;
+    }
+  }
+
+  /**
+   * 단건 조회 — 모바일 목록(findActiveForMobile)과 동일 형태 (include + 보정시간/순작업시간)
+   * 동시작업 보정은 같은 batchId 형제 작업을 함께 넣어 목록과 같은 값이 나오도록 계산
+   */
+  private async findOneForMobile(id: string) {
+    const item = await this.prisma.workItem.findUnique({
+      where: { id },
+      include: {
+        classification: { select: { id: true, code: true, displayName: true } },
+        startedByWorker: { select: { id: true, name: true, employeeCode: true, siteId: true } },
+        assignments: {
+          include: { worker: { select: { id: true, name: true, employeeCode: true } } },
+          orderBy: { addedAt: 'asc' },
+        },
+      },
+    });
+    if (!item) throw new NotFoundException('작업을 찾을 수 없습니다');
+
+    const siblings = item.batchId
+      ? await this.prisma.workItem.findMany({
+          where: { batchId: item.batchId, id: { not: item.id } },
+          select: {
+            id: true,
+            startedByWorkerId: true,
+            batchId: true,
+            volume: true,
+            startedAt: true,
+            endedAt: true,
+          },
+        })
+      : [];
+    const batchMap = calculateBatchAdjustedTime(
+      [item, ...siblings].map((d) => ({
+        id: d.id,
+        startedByWorkerId: d.startedByWorkerId,
+        batchId: d.batchId || null,
+        volume: d.volume,
+        startedAt: d.startedAt,
+        endedAt: d.endedAt,
+      })),
+    );
+    const breaks = await loadBreakConfigResolver(this.prisma, [item.startedByWorker.siteId]);
+    const adj = batchMap.get(item.id);
+
+    return {
+      ...item,
+      adjustedMinutes: adj?.adjustedMinutes ?? null,
+      concurrentCount: adj?.concurrentCount ?? 1,
+      netWorkMinutes: calcNetWorkMinutes(
+        item.startedAt,
+        item.endedAt ?? new Date(),
+        item.notes,
+        breaks.forSite(item.startedByWorker.siteId),
+      ),
+    };
   }
 }
